@@ -758,11 +758,116 @@ button:not(:disabled):hover {
   opacity: 0.85;
 }
 
+/* =========================================================================
+   MOBILE (≈360px–640px). Desktop styling above this block is untouched --
+   every rule here either lives inside this query or a narrower one nested
+   below it, so nothing here can affect a >640px viewport. Goal: reflow, not
+   shrink-to-fit -- tighter spacing and smaller chrome so a phone shows a
+   full section without the padding/font sizes built for a 1180px shell.
+   ========================================================================= */
 @media (max-width: 640px) {
-  .shell { padding: 0 14px 60px; }
-  h1 { font-size: 21px; }
-  .post-grid { grid-template-columns: 1fr; }
-  .stats { grid-template-columns: repeat(2, 1fr); }
-  .topbar-inner { padding: 12px 14px; }
+  html, body { font-size: 14px; }
+
+  .shell { padding: 0 12px 48px; }
+  .topbar { margin-bottom: 18px; }
+  .topbar-inner { padding: 10px 12px; gap: 10px; }
+  .brand { font-size: 13.5px; }
+  .topnav { gap: 12px; font-size: 13px; }
+
+  h1 { font-size: 19px; margin-bottom: 4px; }
+  h2 { font-size: 15.5px; margin-bottom: 8px; }
+  .sub { font-size: 12.5px; margin-bottom: 16px; }
+
+  /* Cards: less padding, less gap between stacked cards -- the single
+     biggest lever for cutting vertical scroll on a page that's mostly
+     stacked cards. */
+  .card { padding: 13px; border-radius: 10px; }
+  .card + .card { margin-top: 10px; }
+
+  /* Forms */
+  label { font-size: 12px; margin-bottom: 4px; }
+  input[type="text"],
+  input[type="url"],
+  input[type="number"],
+  input[type="password"],
+  textarea {
+    padding: 10px 11px;
+    font-size: 16px; /* keeps iOS Safari from auto-zooming on focus */
+  }
+  textarea { min-height: 76px; }
+  .field + .field { margin-top: 12px; }
+  .hint { font-size: 11.5px; }
+
+  /* Buttons: compact horizontally, but tall enough to tap comfortably.
+     Primary calls-to-action in a banner or as the sole submit action go
+     full-width so they're easy to reach without precise aiming. */
+  button { font-size: 13px; padding: 10px 14px; min-height: 40px; }
+  .btn-sm { padding: 8px 12px; font-size: 12.5px; min-height: 36px; }
+  .btn-row { gap: 6px; }
+  form > .btn-row > button[type="submit"] { width: 100%; }
+
+  /* Banners: stack text above the action and make the action full-width --
+     the "Confirm All" / delete CTAs are exactly the "key actions" that need
+     to stay easily reachable. */
+  .banner { padding: 11px 12px; font-size: 12.5px; gap: 8px; }
+  .banner .banner-actions { margin-left: 0; width: 100%; }
+  .banner .banner-actions button { width: 100%; }
+
+  /* Progress stats + stage breakdown */
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 12px 0 10px; }
+  .stat { padding: 9px 10px; }
+  .stat-value { font-size: 17px; }
+  .stat-label { font-size: 10px; }
+  .progress-legend { gap: 10px; font-size: 11.5px; margin-top: 8px; }
+  .stage-breakdown { grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0; }
+  .stage-chip { padding: 7px 8px; gap: 6px; }
+  .stage-chip-count { font-size: 14px; }
+  .stage-chip-label { font-size: 9px; }
+
+  /* Cost: stack instead of squeezing two columns into one line. */
+  .cost-total-card { flex-direction: column; align-items: flex-start; gap: 4px; padding: 11px 12px; }
+  .cost-total-card .hint { margin-left: 0; text-align: left; }
+  .cost-total-value { font-size: 18px; }
+  .cost-row { font-size: 12px; }
+
+  /* Post cards */
+  .post-grid { grid-template-columns: 1fr; gap: 12px; margin-top: 14px; }
+  .post-body { padding: 11px; gap: 8px; }
+  .post-head { gap: 6px; }
+  .post-meta { font-size: 11px; }
+  .badge { font-size: 10px; padding: 2.5px 7px; }
+  .caption-label { font-size: 10.5px; }
+  .caption-preview { font-size: 12.5px; max-height: 108px; }
+  .post-err, .removed-strip { font-size: 11.5px; padding: 7px 9px; }
+  .post-actions { gap: 6px; }
+  .post-actions button { flex: 1 1 auto; min-width: 108px; }
+  .media-note { font-size: 10.5px; padding: 5px 8px; bottom: 8px; left: 8px; right: 8px; }
+
+  /* Stepper: same 5 steps, tighter footprint */
+  .stepper-dot { width: 19px; height: 19px; font-size: 10px; }
+  .stepper-item { width: 20px; gap: 4px; }
+  .stepper-track { top: 9.5px; left: 10px; right: 10px; }
+  .stepper-label { font-size: 8.5px; }
+
+  /* History list: stack each row instead of wrapping mid-row */
+  .job-row { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 0; }
+  .job-url { font-size: 13px; }
+  .job-sub { font-size: 11.5px; }
+  .job-row .btn-row { width: 100%; }
+  .job-row .btn-row button { flex: 1; }
+  .empty { padding: 32px 16px; font-size: 13.5px; }
+
+  /* Password gate */
+  .center-narrow { margin: 32px auto; max-width: 100%; }
+}
+
+/* Extra-small phones (~360px and below): a further, lighter pass -- mainly
+   the stage breakdown, which is the one grid still slightly tight at 3
+   columns once labels wrap to two lines on the narrowest devices. */
+@media (max-width: 380px) {
+  .shell { padding: 0 10px 44px; }
+  .card { padding: 11px; }
   .stage-breakdown { grid-template-columns: repeat(2, 1fr); }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  h1 { font-size: 17.5px; }
 }
