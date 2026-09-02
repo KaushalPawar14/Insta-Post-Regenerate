@@ -15,7 +15,7 @@ description.
 ## The protected prompts
 
 Two prompts are the core IP of this project and live in
-[`api/_lib/prompts.py`](api/_lib/prompts.py):
+[`backend/_lib/prompts.py`](backend/_lib/prompts.py):
 
 - `VISION_PROMPT` — the analyzer's system prompt
 - `GENERATOR_PROMPT` — the `images.edit` compositing prompt
@@ -48,30 +48,41 @@ npm run verify:prompts
 ```
 
 `data_vault/reference_format.png` was copied byte-for-byte (SHA-256 verified) to
-`api/_lib/assets/reference_format.png`.
+`backend/_lib/assets/reference_format.png`.
 
 ---
 
 ## Architecture
 
+One Vercel project, deployed as two [Vercel Services](https://vercel.com/docs/services)
+behind a single domain, split by top-level rewrites in [`vercel.json`](vercel.json):
+
+- **`frontend`** (root `frontend/`) — the Next.js app: UI + Node API routes
+- **`backend`** (root `backend/`) — the Python pipeline functions
+
+Vercel routes `/api/scrape`, `/api/scrape_poll`, `/api/analyze`, and
+`/api/generate` straight to `backend`; every other path goes to `frontend`.
+Each service receives the request's full original path, so the Python code
+and every QStash-published URL are unaffected by the split.
+
 ```
-Browser (Next.js on Vercel)
+Browser (frontend service, Next.js on Vercel)
   │  anonymous Supabase session; every row + image scoped to it by RLS
   │
-  ├─ POST /api/jobs ──────────► creates job row ──► QStash ──► /api/scrape (Python)
+  ├─ POST /api/jobs ──────────► creates job row ──► QStash ──► /api/scrape (backend service)
   │                                                                 │
   │                                          starts Apify run, schedules poll
   │                                                                 ▼
-  │                                             QStash ──► /api/scrape_poll (Python)
+  │                                             QStash ──► /api/scrape_poll (backend service)
   │                                                     sorts by likes, inserts rows,
   │                                                     fans out one message per post
   │                                                                 ▼
-  │                                                QStash ──► /api/analyze (Python)
+  │                                                QStash ──► /api/analyze (backend service)
   │                                                     vision LLM → awaiting_confirmation
   │                                                                 │
   │                                          ═══ HARD STOP. NO MESSAGE PUBLISHED. ═══
   │                                                                 │
-  ├─ user presses Confirm ─────► POST /api/posts/[id]/confirm ──► QStash ──► /api/generate
+  ├─ user presses Confirm ─────► POST /api/posts/[id]/confirm ──► QStash ──► /api/generate (backend service)
   │                                                     images.edit → Supabase Storage
   │
   └─◄── Supabase Realtime (+ fallback poll) pushes every status change back to the UI
@@ -80,7 +91,7 @@ Browser (Next.js on Vercel)
 ### Why the Analyzer never triggers the Generator
 
 The Scraper→Analyzer edge exists as a QStash message. The Analyzer→Generator
-edge **does not exist at all**. `api/analyze.py` finishes by writing
+edge **does not exist at all**. `backend/analyze.py` finishes by writing
 `awaiting_confirmation` and publishing nothing.
 
 The only code path that can start a paid image generation is
@@ -97,7 +108,8 @@ Vercel's Hobby ceiling is **300 seconds**. Since 300s < 15min, QStash simply
 holds the request open until the Python function returns.
 
 Each invocation handles exactly one stage for one post, so nothing ever needs to
-outlive a single function call. **No Railway, Render, or Fly.io required.**
+outlive a single function call. **No Railway, Render, or Fly.io required** — the
+`backend` service is itself just Vercel Functions, not an always-on process.
 
 The one thing that would force a worker is a single generation exceeding 300s —
 which is exactly what `IMAGE_QUALITY=medium` is there to prevent.
@@ -113,7 +125,7 @@ gpt-image-2 at `1024x1536` with `quality` unset (`auto`) has been benchmarked at
 roughly **195s median, 280s worst case** at high quality. That's inside 300s, but
 with almost no margin.
 
-So `api/generate.py` passes `quality` explicitly, defaulting to `medium`. This is
+So `backend/generate.py` passes `quality` explicitly, defaulting to `medium`. This is
 the **only** change to the `images.edit` call — the prompt is untouched. Override
 with the `IMAGE_QUALITY` env var (`low` | `medium` | `high` | `auto`); only raise
 it above `medium` if you move to a Vercel plan with a higher ceiling.
@@ -233,15 +245,28 @@ over as-is.
 
 ### Runtime coexistence
 
-Next.js (Node) route handlers live under `app/api/*` and the Python pipeline
-functions live at root `/api/*.py`. Paths don't overlap:
+Next.js and Python don't share a build the way early community write-ups
+describe (a raw root-level `/api/*.py` folder sitting next to a Next.js app in
+one project). As of the current Vercel docs, that combination is not
+auto-discovered — deploying it produces `The pattern "api/**/*.py" ... doesn't
+match any Serverless Functions`. The supported mechanism for combining two
+runtimes in one project is [**Services**](https://vercel.com/docs/services):
+each runtime is declared as a named service with its own root directory, and
+public routing between them is entirely owned by `vercel.json`'s top-level
+`rewrites` — never by file placement. Hence the `frontend/` / `backend/`
+sibling-directory split (see [Architecture](#architecture)), matching Vercel's
+own worked example directory-for-directory.
 
-- Python: `/api/scrape`, `/api/scrape_poll`, `/api/analyze`, `/api/generate`
-- Next.js: `/api/jobs/*`, `/api/posts/*`, `/api/gate`
+Paths still don't overlap, now enforced by explicit rewrites instead of by
+convention:
 
-`requirements.txt` deliberately contains **no web framework** — a detected Python
-framework preset takes precedence over file-based `/api` functions and would
-hijack routing away from Next.js.
+- `backend` service: `/api/scrape`, `/api/scrape_poll`, `/api/analyze`, `/api/generate`
+- `frontend` service (Next.js's own `app/api/*`): `/api/jobs/*`, `/api/posts/*`, `/api/gate`
+
+`backend/requirements.txt` deliberately contains **no web framework** (no
+FastAPI/Flask/Django) — the four pipeline files use `BaseHTTPRequestHandler`
+directly, so the `backend` service resolves them via Vercel's plain file-based
+Python function routing rather than a single ASGI/WSGI `entrypoint`.
 
 Verify after your first deploy with the health checks in
 [SETUP.md §3.4](SETUP.md#34-confirm-the-python-functions-are-live--do-this-first).
@@ -259,7 +284,12 @@ maintenance cost, not a one-time build risk.
 ## Project layout
 
 ```
-api/                        Python functions (Vercel Python runtime)
+vercel.json                 ★ Services config: frontend + backend, top-level rewrites
+supabase/schema.sql         tables + RLS + Storage + Realtime (run once)
+scripts/                    prompt extraction + integrity guard
+
+backend/                    Vercel Service "backend" (Python runtime)
+  requirements.txt
   scrape.py                 Agent 1a — start the Apify run
   scrape_poll.py            Agent 1b — poll, sort by likes, fan out
   analyze.py                Agent 2  — vision LLM → awaiting_confirmation
@@ -270,9 +300,14 @@ api/                        Python functions (Vercel Python runtime)
     schemas.py              ported Pydantic shapes
     config.py  db.py  queue.py  handler.py  pipeline.py
 
-app/                        Next.js App Router (UI + Node API routes)
-components/                 SessionBoot, JobProgress, PostCard
-lib/                        Supabase clients, QStash, ETA, URL parsing, types
-supabase/schema.sql         tables + RLS + Storage + Realtime (run once)
-scripts/                    prompt extraction + integrity guard
+frontend/                   Vercel Service "frontend" (Next.js)
+  package.json
+  app/                      App Router pages + Node API routes
+  components/               SessionBoot, JobProgress, PostCard
+  lib/                      Supabase clients, QStash, ETA, URL parsing, types
+  middleware.ts             optional SITE_PASSWORD gate
 ```
+
+Each service builds independently from its own root (its own `requirements.txt`
+or `package.json`), exactly as Vercel's Services model expects — see
+[Runtime coexistence](#runtime-coexistence).

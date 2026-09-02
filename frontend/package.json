@@ -3,13 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "vercel dev",
-    "dev:next": "next dev",
+    "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "verify:prompts": "python scripts/verify_prompts.py"
+    "verify:prompts": "python ../scripts/verify_prompts.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

@@ -9,10 +9,14 @@ import { GATE_COOKIE, gateToken, safeEqual } from "@/lib/gate";
  *   - set             -> visitors must enter it once; a digest is stored in an
  *                        httpOnly cookie for 30 days.
  *
- * The QStash callback endpoints are never gated -- they are machine-to-machine
- * calls authenticated by QStash's own request signature, and gating them would
- * break the pipeline. They are excluded in the matcher below AND re-checked
- * here, because a routing change must not silently start gating them.
+ * The QStash callback endpoints (/api/scrape, /api/scrape_poll, /api/analyze,
+ * /api/generate) never reach this middleware at all: vercel.json's top-level
+ * rewrites route them directly to the `backend` Python service before the
+ * `frontend` Next.js service (where this middleware runs) ever sees them.
+ * They are authenticated by QStash's own request signature instead. The
+ * exclusions below are a second, redundant layer of defence -- if a routing
+ * change ever let one of these paths reach this service, it still would not
+ * get gated, which would break the pipeline.
  */
 const UNGATED_PREFIXES = [
   "/gate",

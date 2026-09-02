@@ -101,11 +101,20 @@ git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPO.git && git push
 
 ### 3.2 Import into Vercel
 
+This repo deploys as a single Vercel project containing **two [Vercel
+Services](https://vercel.com/docs/services)** — a `frontend` (Next.js, root
+`frontend/`) and a `backend` (Python pipeline, root `backend/`) — declared in
+[`vercel.json`](vercel.json) at the repo root, with top-level `rewrites`
+routing `/api/scrape`, `/api/scrape_poll`, `/api/analyze` and `/api/generate`
+to `backend` and everything else to `frontend`.
+
 1. <https://vercel.com/new> → **Import** your repository.
-2. Leave **Framework Preset** as **Next.js** and every build setting at its
-   default. Vercel detects the Next.js app and the `/api/*.py` Python functions
-   automatically.
-3. Expand **Environment Variables** and add all of these before deploying:
+2. Vercel reads `vercel.json` and builds both services automatically — you do
+   not need to set a Framework Preset or Root Directory manually. Leave the
+   defaults as offered.
+3. Expand **Environment Variables** and add all of these before deploying.
+   Vercel project environment variables are shared across every service in the
+   project, so this one list covers both:
 
 | Name | Value |
 |---|---|
@@ -147,17 +156,21 @@ Expected: `{"ok": true, "endpoint": "analyze", "method": "GET"}`
 
 Check `/api/scrape`, `/api/scrape_poll`, and `/api/generate` too.
 
-If you get a **404 or the Next.js error page** instead, Next.js is shadowing the
-Python routes. Fix by adding a rewrite in `next.config.mjs`:
+If you get a **404 or the Next.js error page** instead, the `backend` service
+isn't receiving traffic. Check, in order:
 
-```js
-async rewrites() {
-  return { beforeFiles: [] }; // see README "Runtime coexistence" for the full workaround
-}
-```
+1. **Vercel dashboard → Deployments → latest → Functions/Services tab** —
+   confirm both `frontend` and `backend` are listed as built. If `backend` is
+   missing, its build failed; check its build logs (a common cause is
+   `backend/requirements.txt` failing to install).
+2. **`vercel.json` is at the repo root**, not inside `frontend/` or `backend/`
+   — Services config only takes effect from the root file.
+3. The four rewrite `source` paths in `vercel.json` match exactly
+   (`/api/scrape`, `/api/scrape_poll`, `/api/analyze`, `/api/generate`) — a
+   typo here silently falls through to the catch-all `frontend` rewrite.
 
-...but check the health endpoints first — in a standard Next.js + `/api/*.py`
-project this works out of the box.
+See [README → Runtime coexistence](README.md#runtime-coexistence) for why the
+project is split this way.
 
 ---
 
@@ -201,19 +214,29 @@ To turn the gate off again, delete the variable and redeploy.
 
 ## 6. Local development (optional)
 
-Python functions do **not** run under plain `next dev`. Use the Vercel CLI:
+The Python `backend` service does **not** run under plain `next dev` — that
+only starts the `frontend` service. Use the Vercel CLI from the **repo root**
+(where `vercel.json` lives), which builds and serves both services together:
 
 ```bash
 npm install -g vercel
 ```
 
 ```bash
-cd "Instagram application" && vercel link && vercel env pull .env.local && npm run dev
+cd "Instagram application" && vercel link && vercel env pull .env.local && vercel dev
 ```
 
-`npm run dev` runs `vercel dev`, which serves both the Next.js app and the
-Python functions. For UI-only work, `npm run dev:next` is faster but every
-pipeline endpoint will 404.
+Run it from the repo root, not from `frontend/` — `vercel dev` needs to see
+`vercel.json` to know both services exist.
+
+For UI-only work, `cd frontend && npm install && npm run dev` (plain
+`next dev`) is faster, but every pipeline endpoint will 404 since the
+`backend` service isn't running.
+
+QStash can't reach `localhost` either way, so a locally-created job won't
+process regardless of which dev command you use. Either test against a
+preview deployment, or set `QSTASH_DEV=true` to use Upstash's local dev
+server.
 
 QStash can't reach `localhost`, so a locally-created job won't process. Either
 test against a preview deployment, or set `QSTASH_DEV=true` to use Upstash's

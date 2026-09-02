@@ -1,9 +1,26 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "api/**/*.py": {
-      "maxDuration": 300,
-      "excludeFiles": "{node_modules/**,.next/**,app/**,components/**,lib/**,public/**,supabase/**,scripts/**,**/*.test.py,tests/**}"
+  "services": {
+    "frontend": {
+      "root": "frontend/",
+      "framework": "nextjs"
+    },
+    "backend": {
+      "root": "backend/",
+      "runtime": "python",
+      "functions": {
+        "*.py": {
+          "maxDuration": 300,
+          "excludeFiles": "{**/*.test.py,tests/**}"
+        }
+      }
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/api/scrape", "destination": { "service": "backend" } },
+    { "source": "/api/scrape_poll", "destination": { "service": "backend" } },
+    { "source": "/api/analyze", "destination": { "service": "backend" } },
+    { "source": "/api/generate", "destination": { "service": "backend" } },
+    { "source": "/(.*)", "destination": { "service": "frontend" } }
+  ]
 }

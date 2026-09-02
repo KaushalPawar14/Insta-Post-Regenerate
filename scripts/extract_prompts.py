@@ -1,6 +1,6 @@
 """
 Extracts the two protected prompts byte-for-byte from the original pipeline
-source files and emits `api/_lib/prompts.py` for the new project.
+source files and emits `backend/_lib/prompts.py` for the new project.
 
 The ONLY modification applied is the single approved edit to the Generator
 prompt: two bullets appended to the "Image-to-Text Transition" section that
@@ -127,7 +127,7 @@ body = (
     + '    raise RuntimeError("GENERATOR_PROMPT has been modified -- this prompt is protected IP.")\n'
 )
 
-out = DEST / "api" / "_lib" / "prompts.py"
+out = DEST / "backend" / "_lib" / "prompts.py"
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(body, encoding="utf-8")
 print(f"\nWrote {out}")
