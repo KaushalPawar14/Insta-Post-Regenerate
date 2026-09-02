@@ -1,10 +1,10 @@
 """
 Thin `BaseHTTPRequestHandler` scaffolding for the Vercel Python functions.
 
-`BaseHTTPRequestHandler` is used rather than FastAPI/Flask on purpose: Vercel's
-Python *framework preset* detection takes precedence over file-based `/api`
-functions, so having a web framework in requirements.txt would hijack routing
-away from the Next.js app. See requirements.txt.
+`BaseHTTPRequestHandler` is used deliberately, without any Python web
+dependency, so this service resolves each file in this directory as its own
+function via Vercel's plain file-based routing rather than a single
+ASGI/WSGI `entrypoint` app. See requirements.txt.
 """
 
 import json

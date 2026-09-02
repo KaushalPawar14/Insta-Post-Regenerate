@@ -1,8 +1,17 @@
-# Python dependencies for the Vercel Python Functions in /api
+# Python dependencies for this Vercel Service's file-based functions.
 #
-# IMPORTANT: do NOT add fastapi / flask / django here. Vercel's Python
-# framework-preset detection takes precedence over file-based /api functions,
-# which would hijack routing away from the Next.js app.
+# IMPORTANT: do not add a Python ASGI/WSGI web dependency here. This service
+# has no single `app`/`application` entrypoint -- Vercel resolves each .py
+# file in this directory as its own function, and adding one would make
+# Vercel's framework auto-detection try to treat this as that framework's app
+# instead, breaking the four separate function routes.
+#
+# (Also avoid literally naming such dependencies in this file's comments --
+# Vercel's framework auto-detection scans this file's raw text, and it will
+# false-positive on the name appearing in a comment just as readily as on a
+# real dependency line. Learned the hard way: an earlier version of this
+# comment named the frameworks to avoid and that alone made deployment fail
+# with "Multiple frameworks detected in project root".)
 #
 # Notes on what changed versus the original pipeline's requirements.txt:
 #   - langchain-groq  REMOVED: verified genuinely unused (no reference in
