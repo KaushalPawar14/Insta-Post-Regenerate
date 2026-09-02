@@ -49,6 +49,37 @@ def fail_job(job_id: str, message: str) -> None:
     update_job(job_id, status="failed", error=_truncate(message))
 
 
+def claim_job(job_id: str, *, expect_status: str, set_status: str, **fields: Any) -> Optional[Dict[str, Any]]:
+    """
+    Atomically move a job from `expect_status` to `set_status`. Same
+    compare-and-swap pattern as `claim_post` below -- a single
+    `UPDATE ... WHERE id = ? AND status = ?` is atomic in Postgres.
+
+    This is what guarantees a paid, non-idempotent external call (starting an
+    Apify actor run, or fanning out one analyze message per scraped post) can
+    be reached by AT MOST ONE invocation of a stage function per job, no
+    matter how many times QStash redelivers its message -- a retry after a
+    slow/failed response, a genuine duplicate delivery, or two poll deliveries
+    racing each other. Call this to claim ownership of the transition BEFORE
+    making the external call, not after -- claiming after the fact only
+    guards against a second invocation also finishing successfully, not
+    against a second invocation also starting the external side effect.
+
+    Returns the updated row, or None if the job was not in `expect_status`
+    (already claimed by another invocation, or already moved further/failed).
+    """
+    payload = {"status": set_status, **fields}
+    res = (
+        sb()
+        .table("jobs")
+        .update(payload)
+        .eq("id", job_id)
+        .eq("status", expect_status)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 # --- job_posts -------------------------------------------------------------
 def get_post(row_id: str) -> Optional[Dict[str, Any]]:
     res = sb().table("job_posts").select("*").eq("id", row_id).limit(1).execute()

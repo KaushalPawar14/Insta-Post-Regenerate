@@ -6,6 +6,16 @@ This is where the original `agent_1_scraper.py` field extraction and
 sort-by-likes live. The extraction is deliberately tolerant, because
 single-post mode has been confirmed against Apify's documentation but not yet
 against real actor output -- see `normalise_item()`.
+
+IDEMPOTENCY: reading the run's status and its dataset are safe to repeat --
+they're pure reads, Apify doesn't bill for re-reading them, and re-running
+them costs nothing beyond a little compute. What is NOT safe to repeat is the
+insert-posts-and-fan-out-to-analyze step below: two overlapping deliveries of
+this function (a natural next-attempt poll racing a redelivered earlier one,
+for instance) could otherwise both observe the run as SUCCEEDED and both
+insert duplicate `job_posts` rows and publish duplicate (billable) analyze
+messages. `db.claim_job`'s SCRAPING -> ANALYZING compare-and-swap, taken
+immediately before that step, guarantees it runs at most once per job.
 """
 
 import os
@@ -27,8 +37,14 @@ from _lib.schemas import JobStatus, PostStatus  # noqa: E402
 MAX_ATTEMPTS = 40
 POLL_DELAY = "15s"
 
+# Every status apify-client's Run model declares (checked against the
+# installed SDK's type hints, not assumed): READY, RUNNING, SUCCEEDED,
+# FAILED, TIMING-OUT, TIMED-OUT, ABORTING, ABORTED. ABORTING is a transient
+# in-flight state (a stop was requested but the run hasn't settled yet) --
+# treated as in-progress so we keep polling until it reaches ABORTED, rather
+# than falling through to "unexpected status" below.
 TERMINAL_FAILURE_STATES = {"FAILED", "ABORTED", "TIMED-OUT", "TIMING-OUT"}
-IN_PROGRESS_STATES = {"READY", "RUNNING"}
+IN_PROGRESS_STATES = {"READY", "RUNNING", "ABORTING"}
 
 
 def _first(item: Dict[str, Any], *keys: str) -> Optional[Any]:
@@ -120,8 +136,18 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise TerminalError("Job has no Apify run id.")
 
     client = ApifyClient(config.apify_token())
-    actor_run = client.run(run_id).get() or {}
-    state = (actor_run.get("status") or "").upper()
+
+    # apify-client >=3.x returns a typed `Run` object here (or None if the
+    # run cannot be found), not a dict -- attribute access, not dict-style
+    # .get(key). Confirmed against the installed apify-client 3.1.3's Run
+    # pydantic model. This was the second half of the production bug: even
+    # once scrape.py correctly saved a run_id, polling it would have crashed
+    # identically the first time this line executed.
+    actor_run = client.run(run_id).get()
+    if actor_run is None:
+        db.fail_job(job_id, f"Apify run {run_id} could not be found (it may have been deleted).")
+        raise TerminalError("Apify run not found.")
+    state = (actor_run.status or "").upper()
 
     if state in IN_PROGRESS_STATES:
         if attempt >= MAX_ATTEMPTS:
@@ -148,7 +174,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise TerminalError(f"Unexpected Apify status {state!r}.")
 
     # --- run succeeded: read the dataset -----------------------------------
-    dataset_id = actor_run.get("defaultDatasetId")
+    dataset_id = actor_run.default_dataset_id
     if not dataset_id:
         db.fail_job(job_id, "Apify run succeeded but exposed no dataset.")
         raise TerminalError("No dataset on the Apify run.")
@@ -167,6 +193,30 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
             "blocked the request. Check the URL and try again.",
         )
         raise TerminalError("Apify returned no items.")
+
+    # Everything above this point is a pure read (Apify run status, dataset
+    # items) or pure computation -- safe to repeat as many times as QStash
+    # cares to redeliver this message. Everything below is not: inserting
+    # job_posts rows and fanning out analyze messages must happen at most
+    # once per job. Two overlapping deliveries of this function (a natural
+    # next-attempt poll racing a redelivered earlier one, for instance) could
+    # otherwise both reach this point -- both having observed the SAME
+    # SUCCEEDED run, since nothing above mutates any state -- and both insert
+    # duplicate posts and publish duplicate (billable) analyze messages.
+    #
+    # Atomically claim the SCRAPING -> ANALYZING transition now, immediately
+    # before the first side effect. Only one delivery can win it; every other
+    # delivery (including ones that already did all the same reads above)
+    # returns here without inserting anything or publishing anything.
+    claimed = db.claim_job(
+        job_id,
+        expect_status=JobStatus.SCRAPING,
+        set_status=JobStatus.ANALYZING,
+        scrape_completed_at=now_iso(),
+        updated_at=now_iso(),
+    )
+    if claimed is None:
+        return {"skipped": True, "reason": "already transitioned to analyzing"}
 
     input_type = job.get("input_type") or "profile"
     if input_type == "post":
@@ -193,14 +243,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         for index, item in enumerate(selected)
     ]
     inserted = db.insert_posts(rows)
-
-    db.update_job(
-        job_id,
-        status=JobStatus.ANALYZING,
-        total_posts=len(inserted),
-        scrape_completed_at=now_iso(),
-        updated_at=now_iso(),
-    )
+    db.update_job(job_id, total_posts=len(inserted))
 
     # Fan out: one analyze message per post. This replaces the LangGraph
     # Scraper -> Analyzer edge.
