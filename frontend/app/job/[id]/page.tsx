@@ -128,8 +128,8 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
             <strong>
               {awaiting.length} post{awaiting.length === 1 ? "" : "s"} ready for your review.
             </strong>{" "}
-            Nothing is generated until you confirm it, so no image-generation spend happens without
-            you.
+            Remove any you don&apos;t want below, then Confirm All to generate the rest — nothing is
+            generated until you do, so no image-generation spend happens without you.
           </div>
           <div className="banner-actions">
             <button className="btn-primary btn-sm" onClick={confirmAll} disabled={busy !== null}>

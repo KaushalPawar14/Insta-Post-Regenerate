@@ -1,7 +1,47 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { computeProgress, formatEta } from "@/lib/eta";
-import type { Job, JobPost } from "@/lib/types";
+import { formatInr, usdToInr, usdToInrRate, type Job, type JobPost, type PostStatus } from "@/lib/types";
+
+const STAGE_META: { key: PostStatus; label: string; color: string }[] = [
+  { key: "pending", label: "Scraped", color: "var(--text-faint)" },
+  { key: "analyzing", label: "Analyzing", color: "var(--info)" },
+  { key: "awaiting_confirmation", label: "Awaiting confirmation", color: "var(--accent)" },
+  { key: "queued_for_generation", label: "Queued", color: "var(--info)" },
+  { key: "generating", label: "Generating", color: "var(--info)" },
+  { key: "completed", label: "Completed", color: "var(--ok)" },
+  { key: "failed_analysis", label: "Analysis failed", color: "var(--err)" },
+  { key: "failed_generation", label: "Generation failed", color: "var(--err)" },
+  { key: "removed", label: "Removed", color: "var(--text-faint)" },
+];
+
+/** Live-updating count with a small bump animation whenever the value changes. */
+function StageChip({ label, color, count }: { label: string; color: string; count: number }) {
+  const [bump, setBump] = useState(false);
+  const prev = useRef(count);
+
+  useEffect(() => {
+    if (prev.current !== count) {
+      prev.current = count;
+      setBump(true);
+      const t = setTimeout(() => setBump(false), 500);
+      return () => clearTimeout(t);
+    }
+  }, [count]);
+
+  return (
+    <div className={`stage-chip ${count > 0 ? "has-count" : ""}`}>
+      <span className="stage-chip-dot" style={{ background: color, opacity: count > 0 ? 1 : 0.35 }} />
+      <div>
+        <div className={`stage-chip-count ${bump ? "bump" : ""}`} style={{ color: count > 0 ? "var(--text)" : "var(--text-faint)" }}>
+          {count}
+        </div>
+        <div className="stage-chip-label">{label}</div>
+      </div>
+    </div>
+  );
+}
 
 export default function JobProgress({
   job,
@@ -19,6 +59,10 @@ export default function JobProgress({
   const working = progress.inFlight;
 
   const scraping = job.status === "scraping" || job.status === "pending";
+
+  const inrRate = usdToInrRate();
+  const totalCostInr = usdToInr(progress.totalCostUsd, inrRate);
+  const hasEstimatedApify = posts.some((p) => p.apify_cost_usd > 0) && job.apify_cost_is_estimate;
 
   return (
     <div className="card">
@@ -62,6 +106,12 @@ export default function JobProgress({
                 <div className="stat-label">Failed</div>
               </div>
             )}
+            {progress.removed > 0 && (
+              <div className="stat">
+                <div className="stat-value">{progress.removed}</div>
+                <div className="stat-label">Removed</div>
+              </div>
+            )}
           </div>
 
           <div className="progress-track">
@@ -71,25 +121,14 @@ export default function JobProgress({
             <div className="progress-seg seg-fail" style={{ width: pct(progress.failed) }} />
           </div>
 
-          <div className="progress-legend">
-            <span>
-              <i className="legend-dot" style={{ background: "var(--ok)" }} />
-              Completed
-            </span>
-            <span>
-              <i className="legend-dot" style={{ background: "var(--accent)" }} />
-              Awaiting your confirmation
-            </span>
-            <span>
-              <i className="legend-dot" style={{ background: "var(--info)" }} />
-              Processing
-            </span>
-            {progress.failed > 0 && (
-              <span>
-                <i className="legend-dot" style={{ background: "var(--err)" }} />
-                Failed
-              </span>
-            )}
+          {/* Real-time breakdown of exactly how many posts are in each of the
+              9 possible stages right now, not just a done/total count -- every
+              chip updates live off the same Realtime subscription that feeds
+              the posts array, with a small bump animation on change. */}
+          <div className="stage-breakdown">
+            {STAGE_META.map((s) => (
+              <StageChip key={s.key} label={s.label} color={s.color} count={progress.counts[s.key] || 0} />
+            ))}
           </div>
 
           {/*
@@ -97,7 +136,7 @@ export default function JobProgress({
             pipeline can do by itself; posts parked on a Confirm click depend on
             the user, so folding them into an ETA would be meaningless.
           */}
-          <div className="progress-legend" style={{ marginTop: 14, color: "var(--text-dim)" }}>
+          <div className="progress-legend" style={{ marginTop: 4, color: "var(--text-dim)" }}>
             <span>
               <strong style={{ color: "var(--text)" }}>Estimated time remaining:</strong>{" "}
               {working > 0 ? formatEta(progress.etaSeconds) : "nothing running"}
@@ -112,11 +151,32 @@ export default function JobProgress({
           </div>
 
           {progress.measured && (
-            <div className="hint" style={{ marginTop: 8 }}>
+            <div className="hint" style={{ marginTop: 6 }}>
               Measured on this job: ~{Math.round(progress.avgAnalyzeSeconds)}s per analysis, ~
               {Math.round(progress.avgGenerateSeconds)}s per image.
             </div>
           )}
+
+          {/* Running total cost, visible throughout the job -- updates as each
+              post's real vision/image cost lands and as the apportioned Apify
+              share is set right after scraping. */}
+          <div className="cost-total-card" style={{ marginTop: 14 }}>
+            <div>
+              <div className="stat-label" style={{ marginBottom: 2 }}>
+                Estimated cost so far
+              </div>
+              <div className="cost-total-value">{formatInr(totalCostInr)}</div>
+            </div>
+            <div className="hint" style={{ marginLeft: "auto", textAlign: "right" }}>
+              ≈ ${progress.totalCostUsd.toFixed(4)} USD · @ ₹{inrRate.toFixed(2)}/$
+              {hasEstimatedApify && (
+                <>
+                  <br />
+                  Apify portion is an estimate
+                </>
+              )}
+            </div>
+          </div>
         </>
       )}
     </div>

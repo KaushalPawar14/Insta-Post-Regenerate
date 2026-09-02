@@ -1,4 +1,4 @@
-import type { JobPost, PostStatus } from "./types";
+import { postCostUsd, type JobPost, type PostStatus } from "./types";
 
 /**
  * Free-tier QStash caps parallelism at 10, so a batch of posts moves through
@@ -36,6 +36,7 @@ export interface Progress {
   awaitingUser: number;
   completed: number;
   failed: number;
+  removed: number;
   /**
    * Seconds of pipeline work left, counting only what can proceed without
    * the user. Null when nothing is in flight.
@@ -44,6 +45,8 @@ export interface Progress {
   avgAnalyzeSeconds: number;
   avgGenerateSeconds: number;
   measured: boolean;
+  /** Running total of real (+ apportioned Apify) cost across every post so far, in USD. */
+  totalCostUsd: number;
 }
 
 export function computeProgress(posts: JobPost[], targetTotal?: number): Progress {
@@ -56,9 +59,14 @@ export function computeProgress(posts: JobPost[], targetTotal?: number): Progres
     completed: 0,
     failed_analysis: 0,
     failed_generation: 0,
+    removed: 0,
   } as Record<PostStatus, number>;
 
-  for (const post of posts) counts[post.status] = (counts[post.status] ?? 0) + 1;
+  let totalCostUsd = 0;
+  for (const post of posts) {
+    counts[post.status] = (counts[post.status] ?? 0) + 1;
+    totalCostUsd += postCostUsd(post);
+  }
 
   const analyzeSamples = durations(posts, "analyze_started_at", "analyze_completed_at");
   const generateSamples = durations(posts, "generate_started_at", "generate_completed_at");
@@ -73,7 +81,8 @@ export function computeProgress(posts: JobPost[], targetTotal?: number): Progres
   // differently: analysis runs on its own, generation only runs on posts the
   // user has already confirmed. Posts sitting in `awaiting_confirmation` are
   // excluded entirely -- their remaining time depends on the user, not on us,
-  // and folding them in would produce a meaningless countdown.
+  // and folding them in would produce a meaningless countdown. Removed posts
+  // are excluded too -- they will never be processed further.
   const analyzeSeconds = Math.ceil(pendingAnalyze / CONCURRENCY) * avgAnalyzeSeconds;
   const generateSeconds = Math.ceil(pendingGenerate / CONCURRENCY) * avgGenerateSeconds;
 
@@ -86,10 +95,12 @@ export function computeProgress(posts: JobPost[], targetTotal?: number): Progres
     awaitingUser: counts.awaiting_confirmation,
     completed: counts.completed,
     failed: counts.failed_analysis + counts.failed_generation,
+    removed: counts.removed,
     etaSeconds: inFlight > 0 ? Math.round(analyzeSeconds + generateSeconds) : null,
     avgAnalyzeSeconds,
     avgGenerateSeconds,
     measured: analyzeSamples.length > 0 || generateSamples.length > 0,
+    totalCostUsd,
   };
 }
 

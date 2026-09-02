@@ -35,6 +35,13 @@ create table if not exists public.jobs (
   total_posts         integer not null default 0,
   error               text,
 
+  -- Cost tracking (all in USD; converted to INR for display at read time
+  -- using a fixed env-var rate, never a live currency API). Real figure from
+  -- the Apify run's own usage_total_usd when available; a labeled estimate
+  -- otherwise -- see apify_cost_is_estimate and backend/_lib/pricing.py.
+  apify_total_cost_usd   numeric not null default 0,
+  apify_cost_is_estimate boolean not null default true,
+
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now(),
   scrape_started_at   timestamptz,
@@ -75,8 +82,17 @@ create table if not exists public.job_posts (
   status                  text not null default 'pending'
                             check (status in ('pending','analyzing','awaiting_confirmation',
                                               'queued_for_generation','generating','completed',
-                                              'failed_analysis','failed_generation')),
+                                              'failed_analysis','failed_generation','removed')),
   error                   text,
+
+  -- Cost tracking, in USD. vision_cost_usd set when analyze.py completes;
+  -- image_cost_usd set when generate.py completes; apify_cost_usd is this
+  -- post's apportioned share of the job's total scrape cost (see
+  -- jobs.apify_total_cost_usd), set for every post as soon as scraping
+  -- finishes, before analysis even starts.
+  vision_cost_usd         numeric not null default 0,
+  image_cost_usd          numeric not null default 0,
+  apify_cost_usd          numeric not null default 0,
 
   -- Timestamps drive the estimated-time-remaining calculation in the UI.
   created_at              timestamptz not null default now(),

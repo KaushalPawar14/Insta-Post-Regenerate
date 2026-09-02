@@ -34,7 +34,7 @@ import requests  # noqa: E402
 from openai import OpenAI  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from _lib import config, db  # noqa: E402
+from _lib import config, db, pricing  # noqa: E402
 from _lib.handler import TerminalError
 from _lib.pipeline import claim_generation, now_iso, refresh_job_status  # noqa: E402
 from _lib.prompts import render_generator_prompt  # noqa: E402
@@ -100,6 +100,12 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
             quality=config.image_quality(),
         )
 
+        # Real per-call cost from OpenAI's own reported token usage
+        # (ImagesResponse.usage -- attribute access, confirmed against the
+        # installed openai SDK's response model), not a flat quality-tier
+        # guess. See _lib/pricing.py for exactly how this is computed.
+        image_cost = pricing.image_cost_usd(getattr(response, "usage", None))
+
         data_obj = response.data[0]
 
         b64_data = getattr(data_obj, "b64_json", None) or (
@@ -139,6 +145,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         final_image_path=final_path,
         status=PostStatus.COMPLETED,
         generate_completed_at=now_iso(),
+        image_cost_usd=image_cost,
         error=None,
     )
     print(f"     Success! Saved perfect ratio branded image to {final_path}")

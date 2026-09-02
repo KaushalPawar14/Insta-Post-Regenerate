@@ -3,7 +3,16 @@
 import { useEffect, useState } from "react";
 import { authedFetch } from "@/lib/supabase-browser";
 import { useSignedUrl } from "@/lib/use-job";
-import { STAGE_LABELS, isStaleGeneration, type JobPost } from "@/lib/types";
+import {
+  STAGE_LABELS,
+  isStaleGeneration,
+  postCostUsd,
+  usdToInr,
+  usdToInrRate,
+  formatInr,
+  type JobPost,
+} from "@/lib/types";
+import PostStepper from "./PostStepper";
 
 const BADGE_CLASS: Record<JobPost["status"], string> = {
   pending: "badge-idle",
@@ -14,6 +23,7 @@ const BADGE_CLASS: Record<JobPost["status"], string> = {
   completed: "badge-done",
   failed_analysis: "badge-err",
   failed_generation: "badge-err",
+  removed: "badge-idle",
 };
 
 export default function PostCard({ post, onChanged }: { post: JobPost; onChanged: () => void }) {
@@ -35,6 +45,7 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
 
   const stale = isStaleGeneration(post);
   const label = stale ? "Generation timed out" : STAGE_LABELS[post.status];
+  const removed = post.status === "removed";
 
   async function call(action: string, path: string, init?: RequestInit) {
     setBusy(action);
@@ -53,7 +64,10 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
     }
   }
 
-  const confirm = () => call("confirm", `/api/posts/${post.id}/confirm`, { method: "POST" });
+  const remove = () => {
+    if (!window.confirm("Exclude this post from generation? It won't be generated even by Confirm All.")) return;
+    call("remove", `/api/posts/${post.id}/remove`, { method: "POST" });
+  };
   const retry = () => call("retry", `/api/posts/${post.id}/retry`, { method: "POST" });
 
   async function saveCaption() {
@@ -107,10 +121,15 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
     post.status
   );
 
+  const costInr = usdToInr(postCostUsd(post), usdToInrRate());
+  const showCost = post.status === "completed"; // per-post cost shown once the post completes
+
   return (
-    <article className="post">
+    <article className={`post ${removed ? "post-removed" : ""}`}>
       <div className={`post-media ${post.status === "completed" ? "" : "pending"}`}>
-        {post.status === "completed" && finalUrl ? (
+        {removed ? (
+          <div className="media-placeholder">Excluded from generation</div>
+        ) : post.status === "completed" && finalUrl ? (
           <img src={finalUrl} alt={`Generated post ${post.post_id}`} loading="lazy" />
         ) : post.status === "completed" ? (
           <div className="media-placeholder">
@@ -140,10 +159,16 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
           </span>
         </div>
 
+        <PostStepper status={post.status} />
+
         {post.error && !stale && <div className="post-err">{post.error}</div>}
         {error && <div className="post-err">{error}</div>}
 
-        {post.status === "completed" ? (
+        {removed ? (
+          <div className="removed-strip">
+            This post was excluded before confirmation. It will never be generated.
+          </div>
+        ) : post.status === "completed" ? (
           <>
             <label className="caption-label" htmlFor={`cap-${post.id}`}>
               Caption — edit before downloading
@@ -157,6 +182,15 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
               }}
               rows={5}
             />
+
+            {showCost && (
+              <div className="cost-row">
+                Estimated cost:
+                <span className="cost-value">{formatInr(costInr)}</span>
+                <span className="cost-estimate-tag">est.</span>
+              </div>
+            )}
+
             <div className="post-actions">
               <button
                 className="btn-primary btn-sm"
@@ -197,8 +231,8 @@ export default function PostCard({ post, onChanged }: { post: JobPost; onChanged
 
             <div className="post-actions">
               {post.status === "awaiting_confirmation" && (
-                <button className="btn-primary btn-sm" onClick={confirm} disabled={busy !== null}>
-                  {busy === "confirm" ? "Queuing..." : "Confirm & generate"}
+                <button className="btn-danger btn-sm" onClick={remove} disabled={busy !== null}>
+                  {busy === "remove" ? "Removing..." : "Remove"}
                 </button>
               )}
               {(post.status === "failed_generation" || stale) && (

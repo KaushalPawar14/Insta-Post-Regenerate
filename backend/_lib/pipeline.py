@@ -113,6 +113,12 @@ def refresh_job_status(job_id: str) -> None:
         counts.get(PostStatus.COMPLETED, 0)
         + counts.get(PostStatus.FAILED_ANALYSIS, 0)
         + counts.get(PostStatus.FAILED_GENERATION, 0)
+        # A removed post will never be processed further -- it's just as
+        # "done" as completed/failed for the purpose of deciding whether the
+        # job as a whole still has pipeline work left to do. Without this, a
+        # job where every remaining post gets removed (none confirmed) would
+        # never resolve out of the generic "analyzing" bucket below.
+        + counts.get(PostStatus.REMOVED, 0)
     )
     in_flight = (
         counts.get(PostStatus.PENDING, 0)

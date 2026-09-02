@@ -33,7 +33,7 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from _lib import db  # noqa: E402
+from _lib import db, pricing  # noqa: E402
 from _lib.handler import TerminalError
 from _lib.pipeline import claim_analysis, now_iso, refresh_job_status  # noqa: E402
 from _lib.prompts import VISION_PROMPT  # noqa: E402
@@ -102,7 +102,10 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     base64_image = base64.b64encode(jpeg_bytes).decode("utf-8")
 
     llm = ChatOpenAI(model="gpt-5", temperature=0.7)
-    structured_llm = llm.with_structured_output(AnalyzerOutput)
+    # include_raw=True so the real token usage LangChain attaches to the raw
+    # response is available for cost tracking. Without it, .invoke() returns
+    # only the parsed Pydantic object with no usage information at all.
+    structured_llm = llm.with_structured_output(AnalyzerOutput, include_raw=True)
 
     # Build the multimodal message
     message = HumanMessage(
@@ -113,7 +116,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        result = structured_llm.invoke([SystemMessage(content=VISION_PROMPT), message])
+        response = structured_llm.invoke([SystemMessage(content=VISION_PROMPT), message])
     except Exception as exc:  # noqa: BLE001
         print(f"     LLM Analysis failed for {post.post_id}: {exc}")
         db.update_post(row_id, thumb_path=thumb_path)
@@ -121,10 +124,29 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         refresh_job_status(post.job_id)
         raise TerminalError(f"Vision analysis failed: {exc}") from exc
 
+    # With include_raw=True, a parsing failure is returned here rather than
+    # raised -- same failure, different shape, so it needs its own check to
+    # preserve the original behavior of failing the post either way.
+    result = response.get("parsed")
+    if result is None:
+        parsing_error = response.get("parsing_error")
+        print(f"     LLM Analysis failed for {post.post_id}: {parsing_error}")
+        db.update_post(row_id, thumb_path=thumb_path)
+        db.fail_post(row_id, PostStatus.FAILED_ANALYSIS, f"Vision analysis failed: {parsing_error}")
+        refresh_job_status(post.job_id)
+        raise TerminalError(f"Vision analysis failed: {parsing_error}")
+
     post.image_generation_prompt = result.image_generation_prompt
     post.extracted_text = result.extracted_text
     post.refined_caption = result.refined_caption
     print("     Success: Generated prompts and new caption.")
+
+    # `usage_metadata` is a dict at runtime (confirmed against the installed
+    # langchain-core -- `UsageMetadata` subclasses `dict`), so this is
+    # usage["input_tokens"], not attribute access. See _lib/pricing.py.
+    raw_message = response.get("raw")
+    usage_metadata = getattr(raw_message, "usage_metadata", None) if raw_message else None
+    vision_cost = pricing.vision_cost_usd(usage_metadata)
 
     # --- STEP 3: Persist, then STOP for user confirmation ------------------
     db.update_post(
@@ -132,6 +154,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         **post.analyzer_updates(),
         status=PostStatus.AWAITING_CONFIRMATION,
         analyze_completed_at=now_iso(),
+        vision_cost_usd=vision_cost,
         error=None,
     )
     refresh_job_status(post.job_id)

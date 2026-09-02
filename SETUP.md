@@ -39,6 +39,14 @@ This one script creates the `jobs` and `job_posts` tables, every Row Level
 Security policy, the Realtime publication, and the private `generated` Storage
 bucket. It's safe to re-run.
 
+> **Updating an already-deployed project:** `schema.sql` uses
+> `create table if not exists`, so re-running the whole file against a
+> database that already has these tables is a no-op — it will NOT add new
+> columns or update constraints. When a change needs one, it ships as a
+> separate numbered file in `supabase/` (e.g. `migration_002_*.sql`) — run
+> any new one the same way (SQL Editor → paste → Run) before redeploying code
+> that depends on it.
+
 ### 1.3 Enable anonymous sign-ins  ← easy to miss, nothing works without it
 
 1. Sidebar: **Authentication** → **Sign In / Providers**.
@@ -128,6 +136,8 @@ to `backend` and everything else to `frontend`.
 | `APIFY_TOKEN` | your Apify token |
 | `OPENAI_API_KEY` | your OpenAI key |
 | `IMAGE_QUALITY` | `medium` |
+| `APIFY_ESTIMATED_COST_PER_POST_USD` | `0.003` (optional — this is the default) |
+| `NEXT_PUBLIC_USD_TO_INR_RATE` | `94.85` (optional — this is the default) |
 
 4. Click **Deploy**.
 

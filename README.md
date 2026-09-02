@@ -95,11 +95,12 @@ edge **does not exist at all**. `backend/analyze.py` finishes by writing
 `awaiting_confirmation` and publishing nothing.
 
 The only code path that can start a paid image generation is
-`app/api/posts/[id]/confirm/route.ts`, reached by a human clicking Confirm. A
-post nobody confirms simply waits forever — no timeout, no auto-generation.
-
-`confirm-all` is a convenience wrapper that claims each awaiting post
-individually and atomically; it doesn't bypass the rule.
+`app/api/jobs/[id]/confirm-all/route.ts`, reached by a human clicking **Confirm
+All** — the sole confirmation action in the UI (see
+[Remove + Confirm All](#remove--confirm-all)). A post nobody confirms simply
+waits forever — no timeout, no auto-generation. Its per-row claim is atomic
+(`UPDATE ... WHERE status = 'awaiting_confirmation'`), so a rapid double-click
+can never publish two generate messages for the same post.
 
 ### Why no worker service is needed
 
@@ -200,6 +201,79 @@ it on; unset it to turn it off.
 
 ---
 
+## Cost tracking
+
+Every job shows a running total, and every completed post shows its own cost,
+in **₹ INR**, labeled **"Estimated cost"** throughout — because the Apify
+portion of it may not be a real per-run figure (see below).
+
+**Vision (gpt-5) and image generation (gpt-image-2) costs are computed from
+real, API-reported token usage — not a flat guess:**
+
+- `backend/analyze.py` calls `llm.with_structured_output(schema, include_raw=True)`
+  so the raw `AIMessage.usage_metadata` (a dict at runtime — confirmed against
+  the installed `langchain-core`, not assumed) is available, and multiplies
+  its real `input_tokens` / `output_tokens` by gpt-5's per-token price.
+- `backend/generate.py` reads `ImagesResponse.usage` from the real
+  `images.edit()` response (confirmed against the installed `openai` SDK's
+  response model) — which splits input into text tokens and image tokens
+  (a reference image, like ours, bills at the image-token rate) — and
+  multiplies each by gpt-image-2's per-token price.
+
+Both price tables live in [`backend/_lib/pricing.py`](backend/_lib/pricing.py),
+verified against OpenAI's official pricing page on 2026-09-02:
+
+| | Input | Output |
+|---|---|---|
+| gpt-5 | $1.25 / 1M tokens | $10.00 / 1M tokens |
+| gpt-image-2 | $5.00 / 1M text tokens, $8.00 / 1M image tokens | $30.00 / 1M tokens |
+
+**Apify cost** prefers the actor run's own `usage_total_usd` (a real field on
+apify-client's `Run` model, confirmed by introspecting the installed SDK) when
+it's a positive number, apportioned evenly across the posts that run
+produced. When that figure isn't available (or is `None`/`0`, which can
+happen if Apify hasn't finalized billing for a run the instant we poll it),
+it falls back to `APIFY_ESTIMATED_COST_PER_POST_USD` (default `0.003`,
+sourced from `apify/instagram-scraper`'s published $2.70/1,000-results
+pricing) × post count, and `jobs.apify_cost_is_estimate` records which
+happened, surfaced in the UI.
+
+Every cost is stored in **USD** (`vision_cost_usd`, `image_cost_usd`,
+`apify_cost_usd` on `job_posts`; `apify_total_cost_usd` on `jobs`) — INR is a
+**display-only** conversion the frontend performs with a **fixed** rate from
+`NEXT_PUBLIC_USD_TO_INR_RATE` (default `94.85`, the midpoint of two sources
+for the 2026-09-01 USD/INR spot rate). No live currency API is ever called —
+one less dependency, and a job's displayed cost can't shift mid-run because
+the rate moved.
+
+## Remove + Confirm All
+
+There is no per-post Confirm button. Each `awaiting_confirmation` post has a
+**Remove** button instead — it atomically claims that one row
+(`awaiting_confirmation → removed`, the same conditional-`UPDATE` pattern used
+everywhere else in this codebase for idempotency) and the post is excluded
+from generation **permanently**: `removed` is a terminal status, shown
+distinctly in the UI (a dimmed card, a dashed "excluded" strip, a `–` marker
+on its progress stepper), never silently hidden.
+
+**Confirm All** (`app/api/jobs/[id]/confirm-all/route.ts`) is the only way to
+trigger generation. It queries every post still in `awaiting_confirmation` for
+the job and atomically claims each one individually before publishing its
+generate message — removed posts are excluded **by construction** (the query
+itself only ever matches `awaiting_confirmation` rows), not by any extra
+filtering logic that could be forgotten. A rapid double-click races two calls
+against the same rows; the second call's conditional `UPDATE` matches zero
+rows for anything the first call already claimed, so it publishes nothing for
+those — verified with a dry-run simulation of concurrent calls before this
+shipped (see the PR/commit message for the specific cases it checks).
+
+`refresh_job_status` (`backend/_lib/pipeline.py`) treats `removed` the same as
+`completed`/`failed_*` when deciding whether a job still has pipeline work
+left — otherwise a job where every remaining post gets removed (none
+confirmed) would never resolve out of a generic "still working" status.
+
+---
+
 ## What changed from the original pipeline
 
 | Original | Now | Why |
@@ -214,6 +288,9 @@ it on; unset it to turn it off.
 | `images.edit(...)` | `+ quality=` | Hobby's hard 300s ceiling |
 | — | `input_type: "post"` | New single-post-URL mode |
 | — | `awaiting_confirmation` | New per-post confirmation gate |
+| per-post Confirm button | Remove + Confirm All | One atomic, job-level confirmation action; removed posts excluded by construction |
+| — | `removed` status | Terminal off-ramp for a post excluded before confirmation |
+| — | real per-post/per-job cost in ₹ INR | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; `Run.usage_total_usd` for Apify when available |
 
 **Dependencies dropped:**
 

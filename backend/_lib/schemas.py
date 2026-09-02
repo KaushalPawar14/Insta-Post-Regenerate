@@ -47,6 +47,11 @@ class PostStatus:
     COMPLETED = "completed"
     FAILED_ANALYSIS = "failed_analysis"
     FAILED_GENERATION = "failed_generation"
+    # User removed this post from awaiting_confirmation before confirming.
+    # Terminal: never proceeds to generation, whether via Confirm All or
+    # otherwise. Excluded by construction from Confirm All's query (it only
+    # claims AWAITING_CONFIRMATION rows), not by any extra filtering.
+    REMOVED = "removed"
 
 
 class JobStatus:

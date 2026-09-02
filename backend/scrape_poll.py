@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional  # noqa: E402
 
 from apify_client import ApifyClient  # noqa: E402
 
-from _lib import config, db, queue  # noqa: E402
+from _lib import config, db, pricing, queue  # noqa: E402
 from _lib.handler import TerminalError
 from _lib.pipeline import now_iso  # noqa: E402
 from _lib.schemas import JobStatus, PostStatus  # noqa: E402
@@ -243,11 +243,27 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         for index, item in enumerate(selected)
     ]
     inserted = db.insert_posts(rows)
-    db.update_job(job_id, total_posts=len(inserted))
+
+    # Apify cost for this job's scrape: prefer the run's own reported real
+    # figure, falling back to a labeled estimate if it isn't available (or
+    # is zero/None, which can happen if Apify hasn't finalised billing for
+    # this run at the moment we happen to poll it right at SUCCEEDED).
+    total_apify_cost, apify_is_estimate = pricing.apify_cost_usd(
+        actor_run.usage_total_usd, len(inserted)
+    )
+    per_post_apify_cost = total_apify_cost / len(inserted) if inserted else 0.0
+
+    db.update_job(
+        job_id,
+        total_posts=len(inserted),
+        apify_total_cost_usd=total_apify_cost,
+        apify_cost_is_estimate=apify_is_estimate,
+    )
 
     # Fan out: one analyze message per post. This replaces the LangGraph
     # Scraper -> Analyzer edge.
     for row in inserted:
+        db.update_post(row["id"], apify_cost_usd=per_post_apify_cost)
         queue.publish(
             "analyze",
             {"post_row_id": row["id"]},

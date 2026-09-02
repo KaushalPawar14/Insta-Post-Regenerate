@@ -86,3 +86,35 @@ def image_quality() -> str:
 # route that creates jobs and here in the scraper, so a forged request that
 # bypasses the UI still cannot exceed it.
 MAX_POSTS_CEILING = 100
+
+
+# --- Cost tracking -----------------------------------------------------------
+def apify_estimated_cost_per_post_usd() -> float:
+    """
+    Fallback per-post Apify cost, used only when the actor run's own
+    `usage_total_usd` isn't a real positive number (see _lib/pricing.py).
+
+    Default 0.003 sourced from apify/instagram-scraper's published
+    pay-per-result pricing: $2.70 per 1,000 results ($0.0027/result) on the
+    Free plan, rounded up slightly for a conservative default. Verified via
+    web search of Apify's own actor pricing page on 2026-09-02 -- not
+    guessed. Override with a real observed figure once you have one.
+    """
+    value = os.environ.get("APIFY_ESTIMATED_COST_PER_POST_USD", "").strip()
+    if not value:
+        return 0.003
+    try:
+        return float(value)
+    except ValueError:
+        raise ConfigError(
+            f"APIFY_ESTIMATED_COST_PER_POST_USD must be a number, got {value!r}."
+        )
+
+
+
+# NOTE: the USD->INR exchange rate is NOT read here. Every cost this backend
+# computes and stores (job_posts.vision_cost_usd / image_cost_usd /
+# apify_cost_usd, jobs.apify_total_cost_usd) is in USD -- "the APIs bill in
+# USD, so store in USD." INR is purely a display-time conversion the frontend
+# performs when rendering a cost, using NEXT_PUBLIC_USD_TO_INR_RATE. See
+# frontend/lib/types.ts's usdToInr() and .env.example.
