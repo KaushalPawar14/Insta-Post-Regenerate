@@ -9,7 +9,14 @@ import { MAX_POSTS_CEILING } from "@/lib/types";
 export default function NewJobPage() {
   const router = useRouter();
   const [url, setUrl] = useState("");
-  const [maxPosts, setMaxPosts] = useState(3);
+  // String, not number: a controlled number input backed by a number state
+  // fights the user on every keystroke -- clearing the field sends
+  // Number("") = 0 straight back into `value`, so it snaps to a literal "0"
+  // instead of going empty, and typing after that fights the same snap-back.
+  // Keeping the raw text here and only coercing to a number at blur/submit
+  // (see handleMaxPostsBlur and submit() below) lets the user freely clear,
+  // backspace, and retype without interference.
+  const [maxPostsText, setMaxPostsText] = useState("3");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,6 +24,25 @@ export default function NewJobPage() {
   // and re-validates everything, including the 100-post ceiling.
   const parsed = useMemo(() => (url.trim() ? parseInstagramInput(url) : null), [url]);
   const isSinglePost = parsed?.ok === true && parsed.inputType === "post";
+
+  // Parsed only at the point it's needed (blur, submit) -- never on every
+  // keystroke. parseInt("", 10) and parseInt("-", 10) are both NaN, which is
+  // exactly what should make the range check below fail rather than silently
+  // coerce to 0.
+  function parseMaxPosts(): number {
+    return parseInt(maxPostsText, 10);
+  }
+
+  // Enforce the range once editing finishes, not while the user is mid-edit --
+  // an out-of-range number (e.g. "500") gets visibly clamped; an empty or
+  // non-numeric field is left alone so the user can keep typing, and the
+  // existing submit-time check catches it with a clear error if they don't.
+  function handleMaxPostsBlur() {
+    const n = parseMaxPosts();
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.min(Math.max(n, 1), MAX_POSTS_CEILING);
+    setMaxPostsText(String(clamped));
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -27,7 +53,9 @@ export default function NewJobPage() {
       setError(check.error);
       return;
     }
-    if (check.inputType === "profile" && (maxPosts < 1 || maxPosts > MAX_POSTS_CEILING)) {
+
+    const maxPosts = parseMaxPosts();
+    if (check.inputType === "profile" && (!Number.isFinite(maxPosts) || maxPosts < 1 || maxPosts > MAX_POSTS_CEILING)) {
       setError(`Choose between 1 and ${MAX_POSTS_CEILING} posts.`);
       return;
     }
@@ -96,10 +124,12 @@ export default function NewJobPage() {
             <input
               id="max"
               type="number"
+              inputMode="numeric"
               min={1}
               max={MAX_POSTS_CEILING}
-              value={maxPosts}
-              onChange={(e) => setMaxPosts(Number(e.target.value))}
+              value={maxPostsText}
+              onChange={(e) => setMaxPostsText(e.target.value)}
+              onBlur={handleMaxPostsBlur}
               disabled={submitting}
             />
             <div className="hint">

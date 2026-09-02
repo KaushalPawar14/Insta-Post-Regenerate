@@ -13,6 +13,18 @@ sort-by-likes. Two things differ, both forced by the new execution model:
    post URL directly via `directUrls` with `resultsLimit` 1. Sorting is
    meaningless for one post, so it is skipped.
 
+3. For a profile URL, `resultsLimit` here is ALWAYS the server-side max
+   (config.MAX_POSTS_CEILING), never the user's requested output count.
+   Ranking "top N by likes" only means something if it's computed over a
+   pool bigger than N -- asking Apify for exactly N and then "sorting" that
+   same N is a no-op, and ranks by whatever order Apify happens to return
+   (typically reverse-chronological), not by popularity. scrape_poll.py
+   sorts this larger pool by likes descending and slices to the user's
+   requested count; see its docstring. The user's requested count still
+   caps what gets INSERTED as job_posts rows and sent to the (billable)
+   Analyzer -- only the fetch pool size changed, not the output size or the
+   100-post hard ceiling on that output.
+
 IDEMPOTENCY: `client.actor(ACTOR_ID).start(...)` is a real, billable, non-
 idempotent call. This function claims the job's PENDING -> SCRAPING
 transition atomically in Postgres (`db.claim_job`) BEFORE calling it, so at
@@ -88,27 +100,39 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     input_type = job.get("input_type") or "profile"
 
     # Server-side ceiling, enforced again here so a request that bypassed the
-    # Next.js route entirely still cannot exceed it.
+    # Next.js route entirely still cannot exceed it. This is what the USER
+    # will end up with as job_posts rows -- not what gets fetched from Apify
+    # below. See point 3 in the module docstring.
     target_count = min(int(job.get("max_posts") or 1), config.MAX_POSTS_CEILING)
 
     print(f"\nAgent 1: Initializing Apify scraper for {target_url}...")
-    print(f"Agent 1: Target post count set to {target_count}.")
+    print(f"Agent 1: User requested {target_count} output post(s).")
 
     client = ApifyClient(config.apify_token())
 
     if input_type == "post":
         # Single post / reel: the same actor accepts a direct /p/ or /reel/
         # URL. `resultsLimit` is 1 because a post URL yields exactly one item.
+        # Unaffected by the fetch/output decoupling below -- there is nothing
+        # to rank among one post.
         run_input = {
             "directUrls": [target_url],
             "resultsLimit": 1,
             "resultsType": "posts",
         }
     else:
-        # Unchanged from the original pipeline.
+        # Always fetch the full server-side max, regardless of target_count.
+        # scrape_poll.py ranks this larger pool by likes and takes only the
+        # user's requested top N -- so the N that get analyzed/generated
+        # (the only steps that cost OpenAI money) are genuinely the most
+        # popular N out of the channel's larger pool, not just the most
+        # popular among an arbitrarily small fetch. The unselected remainder
+        # is fetched from Apify (a real Apify cost -- see README/SETUP for
+        # the cost tradeoff this implies) but never stored as job_posts rows
+        # and never reaches the Analyzer.
         run_input = {
             "directUrls": [target_url],
-            "resultsLimit": target_count,
+            "resultsLimit": config.MAX_POSTS_CEILING,
             "resultsType": "posts",
         }
 

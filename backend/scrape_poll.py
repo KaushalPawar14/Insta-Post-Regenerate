@@ -223,8 +223,15 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         # One post: nothing to rank.
         selected = raw_scraped_data[:1]
     else:
-        # Unchanged from the original: sort descending by likes, then take the
-        # user's requested count (capped server-side).
+        # scrape.py always fetches the full server-side max pool for a
+        # profile job (see its module docstring, point 3) -- `raw_scraped_data`
+        # is that larger pool, not the user's requested count. This is where
+        # the ranking actually happens: sort descending by likes across that
+        # whole pool, then take only the user's requested top N. Everything
+        # NOT selected here is discarded right now -- it was never inserted
+        # as a job_posts row and is not reachable by anything below this
+        # point, so it can never be analyzed or generated (the two steps
+        # that cost OpenAI money).
         target_count = min(int(job.get("max_posts") or 1), config.MAX_POSTS_CEILING)
         selected = sorted(raw_scraped_data, key=lambda x: x["likes"], reverse=True)[:target_count]
 
