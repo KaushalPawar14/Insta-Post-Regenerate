@@ -60,4 +60,10 @@ export const config = {
     // pipeline endpoints.
     "/((?!_next/static|_next/image|favicon.ico|api/scrape|api/scrape_poll|api/analyze|api/generate).*)",
   ],
+  // Vercel Services does not support the Edge runtime (middleware's default)
+  // at all -- deploying with it produces "Edge Runtime is not supported in
+  // services." Node.js middleware has been stable since Next.js 15.5; this
+  // middleware doesn't use any Edge-only API, so switching runtimes changes
+  // nothing about its behavior.
+  runtime: "nodejs",
 };
