@@ -7,11 +7,11 @@
     },
     "backend": {
       "root": "backend/",
-      "runtime": "python",
+      "framework": "fastapi",
+      "entrypoint": "main:app",
       "functions": {
-        "*.py": {
-          "maxDuration": 300,
-          "excludeFiles": "{**/*.test.py,tests/**}"
+        "main.py": {
+          "maxDuration": 300
         }
       }
     }

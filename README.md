@@ -263,10 +263,19 @@ convention:
 - `backend` service: `/api/scrape`, `/api/scrape_poll`, `/api/analyze`, `/api/generate`
 - `frontend` service (Next.js's own `app/api/*`): `/api/jobs/*`, `/api/posts/*`, `/api/gate`
 
-`backend/requirements.txt` deliberately contains **no web framework** (no
-FastAPI/Flask/Django) — the four pipeline files use `BaseHTTPRequestHandler`
-directly, so the `backend` service resolves them via Vercel's plain file-based
-Python function routing rather than a single ASGI/WSGI `entrypoint`.
+One further wrinkle: Services also requires a Python service to declare a
+**single ASGI/WSGI `entrypoint`** — unlike the older non-Services mode, it does
+not support multiple standalone files each becoming their own function. So
+`backend/main.py` is one small FastAPI app (`entrypoint: "main:app"` in
+`vercel.json`) that owns request/response plumbing only — signature
+verification, body parsing, error-to-status-code mapping — and dispatches to
+`scrape.py` / `scrape_poll.py` / `analyze.py` / `generate.py`'s plain
+`run(payload) -> dict` functions, which hold 100% of the actual pipeline logic
+and are otherwise untouched by this. FastAPI here is purely this service's
+internal transport; because Services routes between `frontend` and `backend`
+entirely at the platform level, it has no way to affect the Next.js service's
+own routing, unlike the "framework preset hijacks everything" risk that
+applied to the earlier, discarded non-Services approach.
 
 Verify after your first deploy with the health checks in
 [SETUP.md §3.4](SETUP.md#34-confirm-the-python-functions-are-live--do-this-first).
@@ -288,8 +297,9 @@ vercel.json                 ★ Services config: frontend + backend, top-level r
 supabase/schema.sql         tables + RLS + Storage + Realtime (run once)
 scripts/                    prompt extraction + integrity guard
 
-backend/                    Vercel Service "backend" (Python runtime)
+backend/                    Vercel Service "backend" (Python, FastAPI entrypoint)
   requirements.txt
+  main.py                   ★ the ASGI entrypoint — request plumbing only
   scrape.py                 Agent 1a — start the Apify run
   scrape_poll.py            Agent 1b — poll, sort by likes, fan out
   analyze.py                Agent 2  — vision LLM → awaiting_confirmation

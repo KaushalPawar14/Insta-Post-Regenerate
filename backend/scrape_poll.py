@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional  # noqa: E402
 from apify_client import ApifyClient  # noqa: E402
 
 from _lib import config, db, queue  # noqa: E402
-from _lib.handler import TerminalError, make_handler  # noqa: E402
+from _lib.handler import TerminalError
 from _lib.pipeline import now_iso  # noqa: E402
 from _lib.schemas import JobStatus, PostStatus  # noqa: E402
 
@@ -216,4 +216,3 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"posts": len(inserted)}
 
 
-handler = make_handler("scrape_poll", run)

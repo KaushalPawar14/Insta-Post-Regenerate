@@ -34,7 +34,7 @@ from langchain_openai import ChatOpenAI  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from _lib import db  # noqa: E402
-from _lib.handler import TerminalError, make_handler  # noqa: E402
+from _lib.handler import TerminalError
 from _lib.pipeline import claim_analysis, now_iso, refresh_job_status  # noqa: E402
 from _lib.prompts import VISION_PROMPT  # noqa: E402
 from _lib.schemas import AnalyzerOutput, PostData, PostStatus  # noqa: E402
@@ -140,4 +140,3 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"post_id": post.post_id, "status": PostStatus.AWAITING_CONFIRMATION}
 
 
-handler = make_handler("analyze", run)
