@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable, Dict  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
-from _lib import queue  # noqa: E402
+from _lib import config, db, queue  # noqa: E402
 from _lib.handler import TerminalError  # noqa: E402
 
 import analyze  # noqa: E402
@@ -106,9 +106,68 @@ async def post_generate(request: Request) -> JSONResponse:
     return await _dispatch("generate", request)
 
 
+REQUIRED_VARS = [
+    "NEXT_PUBLIC_SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "NEXT_PUBLIC_SUPABASE_BUCKET",
+    "QSTASH_TOKEN",
+    "QSTASH_CURRENT_SIGNING_KEY",
+    "QSTASH_NEXT_SIGNING_KEY",
+    "APIFY_TOKEN",
+    "OPENAI_API_KEY",
+    "PUBLIC_BASE_URL",
+    "IMAGE_QUALITY",
+]
+
+
 @app.get("/api/{endpoint}")
 async def health(endpoint: str) -> JSONResponse:
-    """Health probe. Never does work and never touches a paid API."""
+    """
+    Health probe. Never touches a paid API (no Apify/OpenAI calls) and never
+    returns a secret's actual value -- only whether each required variable is
+    present, plus one free Supabase metadata read to prove the URL/key pair
+    and the schema (jobs table) are actually correct, not just non-empty.
+    """
     if endpoint not in STAGES:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse({"ok": True, "endpoint": endpoint, "method": "GET"})
+
+    env_present = {name: bool(os.environ.get(name, "").strip()) for name in REQUIRED_VARS}
+
+    base_url_ok = True
+    base_url_error = None
+    try:
+        config.base_url()
+    except Exception as exc:  # noqa: BLE001
+        base_url_ok = False
+        base_url_error = str(exc)
+
+    image_quality_ok = True
+    image_quality_error = None
+    try:
+        config.image_quality()
+    except Exception as exc:  # noqa: BLE001
+        image_quality_ok = False
+        image_quality_error = str(exc)
+
+    supabase_ok = True
+    supabase_error = None
+    try:
+        db.sb().table("jobs").select("id").limit(1).execute()
+    except Exception as exc:  # noqa: BLE001
+        supabase_ok = False
+        supabase_error = str(exc)
+
+    all_ok = all(env_present.values()) and base_url_ok and image_quality_ok and supabase_ok
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "endpoint": endpoint,
+            "method": "GET",
+            "config_ok": all_ok,
+            "env_present": env_present,
+            "base_url": {"ok": base_url_ok, "error": base_url_error},
+            "image_quality": {"ok": image_quality_ok, "error": image_quality_error},
+            "supabase_reachable": {"ok": supabase_ok, "error": supabase_error},
+        }
+    )
