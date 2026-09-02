@@ -62,7 +62,6 @@ export default function JobProgress({
 
   const inrRate = usdToInrRate();
   const totalCostInr = usdToInr(progress.totalCostUsd, inrRate);
-  const hasEstimatedApify = posts.some((p) => p.apify_cost_usd > 0) && job.apify_cost_is_estimate;
 
   return (
     <div className="card">
@@ -158,8 +157,10 @@ export default function JobProgress({
           )}
 
           {/* Running total cost, visible throughout the job -- updates as each
-              post's real vision/image cost lands and as the apportioned Apify
-              share is set right after scraping. */}
+              post's real vision/image cost lands. OpenAI only: Apify cost is
+              deliberately excluded (the user is on Apify's free credits and
+              wants it treated as $0 / not applicable, not shown at all --
+              see README "Cost tracking"), so no ₹0 Apify line appears here. */}
           <div className="cost-total-card" style={{ marginTop: 14 }}>
             <div>
               <div className="stat-label" style={{ marginBottom: 2 }}>
@@ -169,12 +170,6 @@ export default function JobProgress({
             </div>
             <div className="hint" style={{ marginLeft: "auto", textAlign: "right" }}>
               ≈ ${progress.totalCostUsd.toFixed(4)} USD · @ ₹{inrRate.toFixed(2)}/$
-              {hasEstimatedApify && (
-                <>
-                  <br />
-                  Apify portion is an estimate
-                </>
-              )}
             </div>
           </div>
         </>

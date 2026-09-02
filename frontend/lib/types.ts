@@ -154,9 +154,18 @@ export function isStaleGeneration(post: JobPost): boolean {
 }
 
 // --- cost -------------------------------------------------------------------
-/** Total real (or, for the Apify portion, possibly estimated) cost of one post, in USD. */
+/**
+ * Total cost of one post, in USD -- OpenAI (vision + image generation) only.
+ *
+ * Apify cost is deliberately excluded: the backend never computes or writes
+ * job_posts.apify_cost_usd (it stays at its schema default of 0), because
+ * the user runs on Apify's free credits and wants it treated as $0 / not
+ * applicable, not shown even as a labeled estimate. See README "Cost
+ * tracking". The column itself is left in place, unused, as the lowest-risk
+ * way to reverse this later.
+ */
 export function postCostUsd(post: JobPost): number {
-  return (post.vision_cost_usd || 0) + (post.image_cost_usd || 0) + (post.apify_cost_usd || 0);
+  return (post.vision_cost_usd || 0) + (post.image_cost_usd || 0);
 }
 
 /**

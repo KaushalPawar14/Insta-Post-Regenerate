@@ -204,11 +204,10 @@ it on; unset it to turn it off.
 ## Cost tracking
 
 Every job shows a running total, and every completed post shows its own cost,
-in **₹ INR**, labeled **"Estimated cost"** throughout — because the Apify
-portion of it may not be a real per-run figure (see below).
+in **₹ INR**, labeled **"Estimated cost"** throughout.
 
-**Vision (gpt-5) and image generation (gpt-image-2) costs are computed from
-real, API-reported token usage — not a flat guess:**
+**OpenAI only — vision (gpt-5) and image generation (gpt-image-2), computed
+from real, API-reported token usage, not a flat guess:**
 
 - `backend/analyze.py` calls `llm.with_structured_output(schema, include_raw=True)`
   so the raw `AIMessage.usage_metadata` (a dict at runtime — confirmed against
@@ -228,23 +227,24 @@ verified against OpenAI's official pricing page on 2026-09-02:
 | gpt-5 | $1.25 / 1M tokens | $10.00 / 1M tokens |
 | gpt-image-2 | $5.00 / 1M text tokens, $8.00 / 1M image tokens | $30.00 / 1M tokens |
 
-**Apify cost** prefers the actor run's own `usage_total_usd` (a real field on
-apify-client's `Run` model, confirmed by introspecting the installed SDK) when
-it's a positive number, apportioned evenly across the posts that run
-produced. When that figure isn't available (or is `None`/`0`, which can
-happen if Apify hasn't finalized billing for a run the instant we poll it),
-it falls back to `APIFY_ESTIMATED_COST_PER_POST_USD` (default `0.003`,
-sourced from `apify/instagram-scraper`'s published $2.70/1,000-results
-pricing) × post count, and `jobs.apify_cost_is_estimate` records which
-happened, surfaced in the UI.
+**Apify cost is deliberately excluded — not shown, not even as ₹0.** The user
+runs Apify on free credits and wants it treated as $0 / not applicable, not
+displayed as a labeled estimate. `scrape_poll.py` never computes or writes
+`job_posts.apify_cost_usd` / `jobs.apify_total_cost_usd` / `apify_cost_is_estimate`
+(they stay at their schema default), and the frontend's cost total
+(`postCostUsd()` in `lib/types.ts`) only ever sums `vision_cost_usd +
+image_cost_usd`. The real-usage-based calculation this replaced
+(`pricing.apify_cost_usd()`, `Run.usage_total_usd` when available, falling
+back to `APIFY_ESTIMATED_COST_PER_POST_USD`) is left in the code, unused,
+rather than deleted — the lowest-risk way to bring it back if the
+free-credits situation changes; see `_lib/pricing.py` and `.env.example`.
 
-Every cost is stored in **USD** (`vision_cost_usd`, `image_cost_usd`,
-`apify_cost_usd` on `job_posts`; `apify_total_cost_usd` on `jobs`) — INR is a
-**display-only** conversion the frontend performs with a **fixed** rate from
-`NEXT_PUBLIC_USD_TO_INR_RATE` (default `94.85`, the midpoint of two sources
-for the 2026-09-01 USD/INR spot rate). No live currency API is ever called —
-one less dependency, and a job's displayed cost can't shift mid-run because
-the rate moved.
+Every remaining cost is stored in **USD** (`vision_cost_usd`, `image_cost_usd`
+on `job_posts`) — INR is a **display-only** conversion the frontend performs
+with a **fixed** rate from `NEXT_PUBLIC_USD_TO_INR_RATE` (default `94.85`, the
+midpoint of two sources for the 2026-09-01 USD/INR spot rate). No live
+currency API is ever called — one less dependency, and a job's displayed cost
+can't shift mid-run because the rate moved.
 
 ## Remove + Confirm All
 
@@ -290,7 +290,7 @@ confirmed) would never resolve out of a generic "still working" status.
 | — | `awaiting_confirmation` | New per-post confirmation gate |
 | per-post Confirm button | Remove + Confirm All | One atomic, job-level confirmation action; removed posts excluded by construction |
 | — | `removed` status | Terminal off-ramp for a post excluded before confirmation |
-| — | real per-post/per-job cost in ₹ INR | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; `Run.usage_total_usd` for Apify when available |
+| — | real per-post/per-job cost in ₹ INR (OpenAI only) | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; Apify excluded entirely (free credits) |
 
 **Dependencies dropped:**
 
