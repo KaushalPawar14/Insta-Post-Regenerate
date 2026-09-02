@@ -1,0 +1,28 @@
+# Python dependencies for the Vercel Python Functions in /api
+#
+# IMPORTANT: do NOT add fastapi / flask / django here. Vercel's Python
+# framework-preset detection takes precedence over file-based /api functions,
+# which would hijack routing away from the Next.js app.
+#
+# Notes on what changed versus the original pipeline's requirements.txt:
+#   - langchain-groq  REMOVED: verified genuinely unused (no reference in
+#                     agent_1/2/3 or main.py/state.py; only an orphan
+#                     requirements line and an unused GROQ_API_KEY).
+#   - langgraph       REMOVED: in-process StateGraph orchestration is replaced
+#                     by QStash message chaining, since each stage now runs in
+#                     its own stateless function invocation.
+#   - python-dotenv   REMOVED: Vercel injects environment variables directly.
+#   + supabase        ADDED: replaces the data_vault/ disk writes.
+#   + qstash          ADDED: per-stage job orchestration.
+#   + openai          ADDED: was an implicit transitive dep of the original
+#                     agent_3 (it imported `from openai import OpenAI`).
+
+apify-client>=1.7.0
+openai>=1.40.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+pydantic>=2.7.0
+pillow>=10.3.0
+requests>=2.32.0
+supabase>=2.6.0
+qstash>=2.0.0

@@ -1,0 +1,41 @@
+# --- secrets (never commit) ---
+.env
+.env.local
+.env.*.local
+*.pem
+
+# --- node ---
+node_modules/
+.next/
+out/
+build/
+dist/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+
+# --- vercel ---
+.vercel
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- local scratch ---
+tmp/
+scratch/
+
+# typescript build info
+*.tsbuildinfo
