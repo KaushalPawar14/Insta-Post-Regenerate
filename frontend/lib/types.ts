@@ -35,6 +35,8 @@ export interface Job {
   apify_total_cost_usd: number;
   /** True unless Apify's run reported a real usage_total_usd figure. */
   apify_cost_is_estimate: boolean;
+  /** Public /share/<token> link token. Null until the owner clicks Share. */
+  share_token: string | null;
 }
 
 export interface JobPost {

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import JobProgress from "@/components/JobProgress";
 import PostCard from "@/components/PostCard";
 import { authedFetch } from "@/lib/supabase-browser";
+import { createShareLink } from "@/lib/share";
 import { useJob } from "@/lib/use-job";
 
 export default function JobPage({ params }: { params: Promise<{ id: string }> }) {
@@ -14,6 +15,7 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
   const { job, posts, loading, live, error, reload } = useJob(id);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const awaiting = useMemo(
     () => posts.filter((p) => p.status === "awaiting_confirmation"),
@@ -37,6 +39,21 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not confirm the remaining posts.");
       reload();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function share() {
+    setBusy("share");
+    setActionError(null);
+    try {
+      const url = await createShareLink(id);
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
     } catch (err) {
       setActionError((err as Error).message);
     } finally {
@@ -157,6 +174,9 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
         <Link href="/history">
           <button className="btn-ghost btn-sm">Back to history</button>
         </Link>
+        <button className="btn-secondary btn-sm" onClick={share} disabled={busy !== null}>
+          {busy === "share" ? "Sharing..." : shareCopied ? "Link copied!" : "Share"}
+        </button>
         <button className="btn-danger btn-sm" onClick={deleteJob} disabled={busy !== null}>
           {busy === "delete" ? "Deleting..." : "Delete this job"}
         </button>

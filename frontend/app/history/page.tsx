@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { authedFetch, supabaseBrowser } from "@/lib/supabase-browser";
+import { createShareLink } from "@/lib/share";
 import type { Job, JobPost } from "@/lib/types";
 
 interface JobSummary extends Job {
@@ -23,6 +24,7 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [copiedJobId, setCopiedJobId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
@@ -68,6 +70,20 @@ export default function HistoryPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function share(jobId: string) {
+    setBusy(jobId);
+    try {
+      const url = await createShareLink(jobId);
+      await navigator.clipboard.writeText(url);
+      setCopiedJobId(jobId);
+      setTimeout(() => setCopiedJobId((current) => (current === jobId ? null : current)), 2000);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function remove(jobId: string) {
     if (!window.confirm("Delete this job and all of its generated images? This cannot be undone."))
@@ -151,6 +167,17 @@ export default function HistoryPage() {
                 <Link href={`/job/${job.id}`}>
                   <button className="btn-secondary btn-sm">Open</button>
                 </Link>
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => share(job.id)}
+                  disabled={busy !== null}
+                >
+                  {busy === job.id && copiedJobId !== job.id
+                    ? "Sharing..."
+                    : copiedJobId === job.id
+                      ? "Link copied!"
+                      : "Share"}
+                </button>
                 <button
                   className="btn-danger btn-sm"
                   onClick={() => remove(job.id)}

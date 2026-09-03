@@ -49,6 +49,10 @@ export async function userFromRequest(request: Request): Promise<string | null> 
   return data.user.id;
 }
 
+export function bucketName(): string {
+  return process.env.NEXT_PUBLIC_SUPABASE_BUCKET || "generated";
+}
+
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,

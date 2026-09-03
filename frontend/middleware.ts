@@ -26,6 +26,14 @@ const UNGATED_PREFIXES = [
   "/api/scrape_poll",
   "/api/analyze",
   "/api/generate",
+  // Public "share this job" page and its data route. These are meant to be
+  // viewable by anyone with the link, with or without the site password --
+  // gating them here would defeat the point of a link you can send to
+  // someone who has no access to the app at all. Their own security is the
+  // unguessable share_token, checked in app/api/share/[token]/route.ts, not
+  // this gate.
+  "/share",
+  "/api/share",
 ];
 
 export async function middleware(request: NextRequest) {

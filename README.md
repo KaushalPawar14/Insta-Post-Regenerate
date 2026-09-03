@@ -165,6 +165,37 @@ identity is the isolation boundary:
 Because there's no login, clearing browser storage loses access to previous jobs.
 That's the trade-off of a no-signup app.
 
+### Sharing a job
+
+The **Share** button (job page and history list) is the one deliberate hole
+in this isolation, and it's scoped as narrowly as possible on purpose:
+
+- `POST /api/jobs/[id]/share` mints (or returns the existing)
+  `jobs.share_token` — a fresh `crypto.randomUUID()`, never the job's own
+  database id — and is itself owner-scoped (`user_id = caller`) like every
+  other write in this app.
+- `GET /api/share/[token]` is the only public, unauthenticated read in the
+  entire app. It looks up the job by `share_token` alone, using the
+  service-role key, and returns only `{id, post_id, caption, image_url}` for
+  posts with `status = 'completed'` — no other status, no cost figures, no
+  other job's data, ever.
+- **No RLS policy grants the `anon` role any access** to `jobs`, `job_posts`,
+  or `storage.objects` — every policy in `schema.sql` is `to authenticated`
+  only. A naive "allow anon to select jobs where share_token is not null"
+  policy would let any visitor enumerate *every* shared job across *every*
+  user, since RLS can't verify "the caller knows this specific token" — it
+  can only gate which rows a role sees once granted access to the table at
+  all. Enforcing the token match entirely in `/api/share/[token]/route.ts`,
+  with zero anon grants on the underlying tables, avoids that enumeration
+  risk structurally rather than relying on a policy staying correctly
+  written forever.
+- The public `/share/<token>` page skips the anonymous-session bootstrap
+  (`components/SessionBoot.tsx`) entirely — it never queries Supabase
+  directly, only this one route, so it has no need for a session and no
+  anonymous Supabase user gets created for a random link click.
+- It's read-only: the route file exports a `GET` handler and nothing else.
+  There is no way to confirm, remove, retry, or delete anything through it.
+
 ---
 
 ## Data lifecycle

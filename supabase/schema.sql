@@ -42,6 +42,14 @@ create table if not exists public.jobs (
   apify_total_cost_usd   numeric not null default 0,
   apify_cost_is_estimate boolean not null default true,
 
+  -- Public "share this job" link. NULL until the owner clicks Share; set
+  -- once, then reused. Deliberately NOT the job's own uuid `id` -- a share
+  -- link must not double as a way to guess/enumerate real job ids. No RLS
+  -- policy grants `anon` access to this table at all; the public /share
+  -- page reaches this column only through a server-side route using the
+  -- service-role key. See migration_003_share_token.sql.
+  share_token         text unique,
+
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now(),
   scrape_started_at   timestamptz,
