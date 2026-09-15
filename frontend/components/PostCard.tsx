@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { authedFetch } from "@/lib/supabase-browser";
-import { useSignedUrl, useGatedImage } from "@/lib/use-job";
+import { authedFetch, supabaseBrowser } from "@/lib/supabase-browser";
+import { useSignedUrl, useGatedImage, BUCKET } from "@/lib/use-job";
+import { downloadSlidesAsZip } from "@/lib/slide-download";
 import {
   ALL_BRANDS,
   BRAND_LABELS,
@@ -180,23 +181,59 @@ export default function PostCard({
     ? currentBrand?.status === "completed" && !!finalUrl
     : !!slideThumbUrl;
 
+  // Every slide's currently-showing image (generated, for the preferred
+  // brand if it exists there, else whichever brand IS completed; original,
+  // for a skipped/failed-analysis slide) -- the exact same resolution
+  // PostCard already uses to decide what the current slide displays,
+  // generalized across every slide instead of just the one in view. Only
+  // used to build a multi-slide ZIP; a single-image post never calls this
+  // (it always has exactly one slide, so the branch below never reaches it).
+  async function resolveSlideDownloadSignedUrl(slide: Slide): Promise<string | null> {
+    const slideBrands = brands.filter((b) => b.slide_id === slide.id);
+    let path: string | null = null;
+    if (slide.status === "analyzed") {
+      const candidate =
+        (selectedBrand && slideBrands.find((b) => b.brand === selectedBrand)) ??
+        slideBrands.find((b) => b.status === "completed") ??
+        null;
+      if (candidate?.status === "completed" && candidate.final_image_path) {
+        path = candidate.final_image_path;
+      }
+    } else {
+      path = slide.thumb_path;
+    }
+    if (!path) return null;
+    const { data: signed } = await supabaseBrowser().storage.from(BUCKET).createSignedUrl(path, 3600);
+    return signed?.signedUrl ?? null;
+  }
+
   async function download() {
-    if (!downloadUrl || !currentSlide) return;
+    if (!currentSlide) return;
     setBusy("download");
     setError(null);
     try {
-      const response = await fetch(downloadUrl);
-      if (!response.ok) throw new Error("Could not fetch the image.");
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      const brandSuffix = showsGeneratedContent && currentBrand ? `_${currentBrand.brand}` : "_original";
-      anchor.download = `${post.post_id}_slide${currentSlide.slide_index}${brandSuffix}_final.png`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(objectUrl);
+      if (sortedSlides.length > 1) {
+        // Multi-slide (carousel) post: a single ZIP, one image per slide in
+        // slide order, numbered 1/2/3/... -- browsers can't hand back an
+        // actual OS folder, so a ZIP is the standard stand-in.
+        const urls = await Promise.all(sortedSlides.map(resolveSlideDownloadSignedUrl));
+        await downloadSlidesAsZip(urls);
+      } else {
+        // Single-image post: EXACT pre-carousel behavior, untouched.
+        if (!downloadUrl) return;
+        const response = await fetch(downloadUrl);
+        if (!response.ok) throw new Error("Could not fetch the image.");
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        const brandSuffix = showsGeneratedContent && currentBrand ? `_${currentBrand.brand}` : "_original";
+        anchor.download = `${post.post_id}_slide${currentSlide.slide_index}${brandSuffix}_final.png`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
 
       // Feeds the "everything downloaded -- you can delete this job" hint.
       await authedFetch(`/api/posts/${post.id}/downloaded`, { method: "POST" });

@@ -4,6 +4,7 @@ import { use, useEffect, useMemo, useState } from "react";
 import BrandToggle from "@/components/BrandToggle";
 import SlideNav from "@/components/SlideNav";
 import { useGatedImage } from "@/lib/use-job";
+import { downloadSlidesAsZip } from "@/lib/slide-download";
 import type { Brand } from "@/lib/types";
 
 interface SharedBrandImage {
@@ -135,24 +136,40 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   // minus the authenticated `.../downloaded` call at the end -- that marks
   // the OWNER's post as downloaded (feeds their private "delete this job?"
   // nudge) and requires a bearer token neither present nor appropriate here.
-  // Downloads whichever slide+brand is currently being viewed.
+  // Downloads whichever slide+brand is currently being viewed -- or, for a
+  // multi-slide post, every slide's currently-showing image bundled into one
+  // ZIP (see resolveSharedSlideUrl below and lib/slide-download.ts).
+  function resolveSharedSlideUrl(slide: SharedSlide): string | null {
+    if (slide.brands.length > 0) {
+      const candidate = (selectedBrand && slide.brands.find((b) => b.brand === selectedBrand)) ?? slide.brands[0];
+      return candidate?.image_url ?? null;
+    }
+    return slide.original_image_url;
+  }
+
   async function download() {
-    if (!imageUrl || !currentSlide) return;
+    if (!currentSlide) return;
     setBusy(true);
     setActionError(null);
     try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) throw new Error("Could not fetch the image.");
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      const suffix = current ? current.brand : "original";
-      anchor.download = `${post.post_id}_slide${currentSlide.slide_index}_${suffix}_final.png`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(objectUrl);
+      if (sortedSlides.length > 1) {
+        await downloadSlidesAsZip(sortedSlides.map(resolveSharedSlideUrl));
+      } else {
+        // Single-image post: EXACT pre-carousel behavior, untouched.
+        if (!imageUrl) return;
+        const response = await fetch(imageUrl);
+        if (!response.ok) throw new Error("Could not fetch the image.");
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        const suffix = current ? current.brand : "original";
+        anchor.download = `${post.post_id}_slide${currentSlide.slide_index}_${suffix}_final.png`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
     } catch (err) {
       setActionError((err as Error).message);
     } finally {
