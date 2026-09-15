@@ -8,14 +8,17 @@ import PostCard from "@/components/PostCard";
 import { authedFetch } from "@/lib/supabase-browser";
 import { createShareLink } from "@/lib/share";
 import { useJob } from "@/lib/use-job";
+import { ALL_BRANDS, BRAND_LABELS, type Brand } from "@/lib/types";
 
 export default function JobPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { job, posts, loading, live, error, reload } = useJob(id);
+  const { job, posts, brands, brandsForPost, loading, live, error, reload } = useJob(id);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const [selectedBrands, setSelectedBrands] = useState<Set<Brand>>(new Set());
+  const [confirmValidation, setConfirmValidation] = useState<string | null>(null);
 
   const awaiting = useMemo(
     () => posts.filter((p) => p.status === "awaiting_confirmation"),
@@ -31,11 +34,32 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
     completed.length === posts.length &&
     completed.every((p) => p.downloaded);
 
-  async function confirmAll() {
+  function toggleBrand(brand: Brand) {
+    setConfirmValidation(null);
+    setSelectedBrands((current) => {
+      const next = new Set(current);
+      if (next.has(brand)) next.delete(brand);
+      else next.add(brand);
+      return next;
+    });
+  }
+
+  async function confirmAndGenerate() {
+    if (selectedBrands.size === 0) {
+      // Neither checkbox is pre-checked, by design -- catch the empty case
+      // here rather than submitting nothing, and keep the user on this same
+      // screen to pick a format and try again.
+      setConfirmValidation("Select at least one format.");
+      return;
+    }
+    setConfirmValidation(null);
     setBusy("confirm-all");
     setActionError(null);
     try {
-      const response = await authedFetch(`/api/jobs/${id}/confirm-all`, { method: "POST" });
+      const response = await authedFetch(`/api/jobs/${id}/confirm-all`, {
+        method: "POST",
+        body: JSON.stringify({ brands: Array.from(selectedBrands) }),
+      });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not confirm the remaining posts.");
       reload();
@@ -137,20 +161,40 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
         </div>
       )}
 
-      <JobProgress job={job} posts={posts} live={live} />
+      <JobProgress job={job} posts={posts} brands={brands} live={live} />
 
       {awaiting.length > 0 && (
         <div className="banner banner-warn" style={{ marginTop: 16 }}>
-          <div>
+          <div style={{ width: "100%" }}>
             <strong>
               {awaiting.length} post{awaiting.length === 1 ? "" : "s"} ready for your review.
             </strong>{" "}
-            Remove any you don&apos;t want below, then Confirm All to generate the rest — nothing is
-            generated until you do, so no image-generation spend happens without you.
+            Remove any you don&apos;t want below, choose which format(s) to generate, then Confirm &amp;
+            Generate — nothing is generated until you do, so no image-generation spend happens without
+            you.
+            <div className="btn-row" style={{ marginTop: 10 }}>
+              {ALL_BRANDS.map((brand) => (
+                <label
+                  key={brand}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedBrands.has(brand)}
+                    onChange={() => toggleBrand(brand)}
+                    disabled={busy !== null}
+                  />
+                  {BRAND_LABELS[brand]}
+                </label>
+              ))}
+            </div>
+            {confirmValidation && (
+              <div style={{ color: "var(--err)", fontSize: 12.5, marginTop: 6 }}>{confirmValidation}</div>
+            )}
           </div>
           <div className="banner-actions">
-            <button className="btn-primary btn-sm" onClick={confirmAll} disabled={busy !== null}>
-              {busy === "confirm-all" ? "Queuing..." : `Confirm all ${awaiting.length}`}
+            <button className="btn-primary btn-sm" onClick={confirmAndGenerate} disabled={busy !== null}>
+              {busy === "confirm-all" ? "Queuing..." : "Confirm & Generate"}
             </button>
           </div>
         </div>
@@ -165,7 +209,7 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
       ) : (
         <div className="post-grid">
           {posts.map((post) => (
-            <PostCard key={post.id} post={post} onChanged={reload} />
+            <PostCard key={post.id} post={post} brands={brandsForPost(post.id)} onChanged={reload} />
           ))}
         </div>
       )}

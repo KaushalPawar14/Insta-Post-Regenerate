@@ -1,4 +1,4 @@
-# Instagram AI Auto-Generator
+# Instagram Post Generator
 
 A hosted, multi-tenant web app that ports an existing three-agent LangGraph
 pipeline to Next.js on Vercel + Supabase + Upstash QStash.
@@ -14,13 +14,14 @@ description.
 
 ## The protected prompts
 
-Two prompts are the core IP of this project and live in
+Three prompts are the core IP of this project and live in
 [`backend/_lib/prompts.py`](backend/_lib/prompts.py):
 
 - `VISION_PROMPT` — the analyzer's system prompt
-- `GENERATOR_PROMPT` — the `images.edit` compositing prompt
+- `GENERATOR_PROMPT` — the Facts4Genius `images.edit` compositing prompt
+- `FACTSBYTES_GENERATOR_PROMPT` — the Facts Bytes `images.edit` compositing prompt
 
-They were **extracted programmatically** from the original pipeline by
+The first two were **extracted programmatically** from the original pipeline by
 [`scripts/extract_prompts.py`](scripts/extract_prompts.py) rather than retyped,
 so fidelity is guaranteed rather than assumed.
 
@@ -39,16 +40,25 @@ authorised edit, appended to the *Image-to-Text Transition* section:
 Nothing else changed: not the border rules, not the branding text, not the
 layout instructions, not the wording of any other sentence.
 
+`FACTSBYTES_GENERATOR_PROMPT` has no original pipeline file to extract from —
+it was provided directly and copied verbatim into
+[`scripts/factsbytes_prompt_source.txt`](scripts/factsbytes_prompt_source.txt),
+its own canonical source-of-truth artifact. It has **zero modifications**
+versus that file — there is no approved edit for this one, unlike
+`GENERATOR_PROMPT`'s gradient-position line.
+
 The module **self-verifies against embedded SHA-256 checksums at import time**
-and refuses to load if either prompt is edited. To re-check against the original
-source at any time:
+for all three prompts, and refuses to load if any is edited. To re-check
+against the original sources at any time:
 
 ```bash
 npm run verify:prompts
 ```
 
 `data_vault/reference_format.png` was copied byte-for-byte (SHA-256 verified) to
-`backend/_lib/assets/reference_format.png`.
+`backend/_lib/assets/reference_format.png` (Facts4Genius). The Facts Bytes
+template lives alongside it at
+`backend/_lib/assets/reference_format_factsbytes.png`.
 
 ---
 
@@ -82,7 +92,10 @@ Browser (frontend service, Next.js on Vercel)
   │                                                                 │
   │                                          ═══ HARD STOP. NO MESSAGE PUBLISHED. ═══
   │                                                                 │
-  ├─ user presses Confirm ─────► POST /api/posts/[id]/confirm ──► QStash ──► /api/generate (backend service)
+  ├─ user picks format(s), presses Confirm & Generate ──► POST /api/jobs/[id]/confirm-all
+  │                                                     one job_post_brands row per selected
+  │                                                     format per post ──► QStash (one message
+  │                                                     per row) ──► /api/generate (backend service)
   │                                                     images.edit → Supabase Storage
   │
   └─◄── Supabase Realtime (+ fallback poll) pushes every status change back to the UI
@@ -95,12 +108,13 @@ edge **does not exist at all**. `backend/analyze.py` finishes by writing
 `awaiting_confirmation` and publishing nothing.
 
 The only code path that can start a paid image generation is
-`app/api/jobs/[id]/confirm-all/route.ts`, reached by a human clicking **Confirm
-All** — the sole confirmation action in the UI (see
-[Remove + Confirm All](#remove--confirm-all)). A post nobody confirms simply
-waits forever — no timeout, no auto-generation. Its per-row claim is atomic
-(`UPDATE ... WHERE status = 'awaiting_confirmation'`), so a rapid double-click
-can never publish two generate messages for the same post.
+`app/api/jobs/[id]/confirm-all/route.ts`, reached by a human picking at least
+one format and clicking **Confirm & Generate** — the sole confirmation action
+in the UI (see [Remove + Confirm All](#remove--confirm-all) and
+[Multi-brand generation](#multi-brand-generation)). A post nobody confirms
+simply waits forever — no timeout, no auto-generation. Its per-row claim is
+atomic (`UPDATE ... WHERE status = 'awaiting_confirmation'`), so a rapid
+double-click can never publish two generate messages for the same post+format.
 
 ### Why no worker service is needed
 
@@ -248,7 +262,10 @@ from real, API-reported token usage, not a flat guess:**
   `images.edit()` response (confirmed against the installed `openai` SDK's
   response model) — which splits input into text tokens and image tokens
   (a reference image, like ours, bills at the image-token rate) — and
-  multiplies each by gpt-image-2's per-token price.
+  multiplies each by gpt-image-2's per-token price. This runs once per
+  confirmed **format**, so a post generated in both Facts4Genius and Facts
+  Bytes carries two independent image-generation costs (see
+  [Multi-brand generation](#multi-brand-generation)).
 
 Both price tables live in [`backend/_lib/pricing.py`](backend/_lib/pricing.py),
 verified against OpenAI's official pricing page on 2026-09-02:
@@ -270,12 +287,14 @@ back to `APIFY_ESTIMATED_COST_PER_POST_USD`) is left in the code, unused,
 rather than deleted — the lowest-risk way to bring it back if the
 free-credits situation changes; see `_lib/pricing.py` and `.env.example`.
 
-Every remaining cost is stored in **USD** (`vision_cost_usd`, `image_cost_usd`
-on `job_posts`) — INR is a **display-only** conversion the frontend performs
-with a **fixed** rate from `NEXT_PUBLIC_USD_TO_INR_RATE` (default `94.85`, the
-midpoint of two sources for the 2026-09-01 USD/INR spot rate). No live
-currency API is ever called — one less dependency, and a job's displayed cost
-can't shift mid-run because the rate moved.
+Every remaining cost is stored in **USD** — `vision_cost_usd` on `job_posts`
+(one vision call per post, shared across formats), and `image_cost_usd` on
+each `job_post_brands` row (one per confirmed format) — and summed per post
+by `postCostUsd()` in `lib/types.ts`. INR is a **display-only** conversion the
+frontend performs with a **fixed** rate from `NEXT_PUBLIC_USD_TO_INR_RATE`
+(default `94.85`, the midpoint of two sources for the 2026-09-01 USD/INR spot
+rate). No live currency API is ever called — one less dependency, and a job's
+displayed cost can't shift mid-run because the rate moved.
 
 ## Remove + Confirm All
 
@@ -287,21 +306,93 @@ from generation **permanently**: `removed` is a terminal status, shown
 distinctly in the UI (a dimmed card, a dashed "excluded" strip, a `–` marker
 on its progress stepper), never silently hidden.
 
-**Confirm All** (`app/api/jobs/[id]/confirm-all/route.ts`) is the only way to
-trigger generation. It queries every post still in `awaiting_confirmation` for
-the job and atomically claims each one individually before publishing its
-generate message — removed posts are excluded **by construction** (the query
-itself only ever matches `awaiting_confirmation` rows), not by any extra
-filtering logic that could be forgotten. A rapid double-click races two calls
-against the same rows; the second call's conditional `UPDATE` matches zero
-rows for anything the first call already claimed, so it publishes nothing for
-those — verified with a dry-run simulation of concurrent calls before this
-shipped (see the PR/commit message for the specific cases it checks).
+**Confirm & Generate** (`app/api/jobs/[id]/confirm-all/route.ts`) is the only
+way to trigger generation. The user first picks one or both output formats via
+checkboxes — both start **unselected**; clicking the button with none checked
+submits nothing and shows an inline "Select at least one format" message
+instead. Once at least one format is picked, the route queries every post
+still in `awaiting_confirmation` for the job and atomically claims each one
+individually, then inserts one `job_post_brands` row and publishes one
+generate message **per selected format**, per post — removed posts are
+excluded **by construction** (the query itself only ever matches
+`awaiting_confirmation` rows), not by any extra filtering logic that could be
+forgotten. A rapid double-click races two calls against the same rows; the
+second call's conditional `UPDATE` matches zero rows for anything the first
+call already claimed, so it publishes nothing for those — verified with a
+dry-run simulation of concurrent calls before this shipped (see the PR/commit
+message for the specific cases it checks).
 
 `refresh_job_status` (`backend/_lib/pipeline.py`) treats `removed` the same as
 `completed`/`failed_*` when deciding whether a job still has pipeline work
 left — otherwise a job where every remaining post gets removed (none
 confirmed) would never resolve out of a generic "still working" status.
+
+---
+
+## Multi-brand generation
+
+A post can now be generated in **either or both** output formats —
+Facts4Genius (the original branded template) and Facts Bytes (a second,
+independently-branded template using its own protected prompt and its own
+reference image, `backend/_lib/assets/reference_format_factsbytes.png`) —
+without duplicating any of the scrape/vision work.
+
+**Schema: a separate `job_post_brands` table, not parallel columns.** A naive
+approach would add `facts4genius_status`, `facts4genius_image_path`,
+`factsbytes_status`, `factsbytes_image_path`, ... directly onto `job_posts`.
+That was rejected because a post's number of generations is no longer fixed
+at one — it's 0, 1, or 2, and the moment a third format ever exists, every
+column doubles again. `job_post_brands` (`supabase/migration_004_multi_brand.sql`)
+instead has one row per `(post_id, brand)` — `unique(post_id, brand)` — each
+with its own `status`, `final_image_path`, `image_cost_usd`, and error fields.
+This is the same "outgrows fixed columns" reasoning already applied once in
+this codebase when per-post generation state was pulled out of a single wide
+row, kept consistent rather than special-cased for brands.
+
+**`job_posts.status` becomes a rollup, not a directly-written value.** The
+Generator used to `UPDATE job_posts SET status = ...` on its own row.  Now it
+writes to that post's `job_post_brands` row instead, and
+`refresh_post_status()` (`backend/_lib/pipeline.py`) recomputes
+`job_posts.status` from all of that post's brand rows via
+`compute_post_rollup_status()`:
+
+| Brand rows | Post status |
+|---|---|
+| Any row `generating` | `generating` |
+| Some (not all) rows still `queued_for_generation` | `generating` |
+| All rows `queued_for_generation` | `queued_for_generation` |
+| All rows terminal, ≥1 `completed` | `completed` |
+| All rows terminal, none `completed` | `failed_generation` |
+
+The payoff of this rollup design: `job_posts.status` keeps its exact original
+set of values and meaning, so `PostStepper`, the stage-breakdown UI, and the
+ETA calculation in `lib/eta.ts` needed **no logic changes** — only `eta.ts`
+and `JobProgress` had their signatures extended to also accept `brands[]`, for
+cost summation. Every place in the app that already reasoned about post
+status keeps working unmodified, whether a post ends up with one generation
+or two.
+
+**Display.** `components/BrandToggle.tsx` is a small tab control shown only
+when a post has more than one `job_post_brands` row; it's shared verbatim
+between the results view (`PostCard.tsx`), the public share page
+(`share/[token]/page.tsx`), and any post reached from History — one
+component, not three reimplementations. Download always targets whichever
+brand is currently selected in the toggle.
+
+**Generating the missing format later.** A post confirmed for only one format
+shows an **"Also generate for Facts Bytes"** (or Facts4Genius) button, backed
+by `POST /api/posts/[id]/generate-brand`. It reuses the post's existing
+Analyzer output — it never re-scrapes or re-runs the vision call — so the
+only new cost is that one additional `images.edit` call. The same route
+powers **Retry** for a single failed format, atomically claiming
+`failed_generation → queued_for_generation` on that one `job_post_brands` row
+so a retry can never duplicate a completed sibling format.
+
+**History list.** Each job row shows a small tag for every format with at
+least one `completed` `job_post_brands` row anywhere in that job (across all
+its posts) — a job-level summary only. Which specific post has which format
+is still shown on that post's own card once the job is opened, not on the
+History row.
 
 ---
 
@@ -319,9 +410,10 @@ confirmed) would never resolve out of a generic "still working" status.
 | `images.edit(...)` | `+ quality=` | Hobby's hard 300s ceiling |
 | — | `input_type: "post"` | New single-post-URL mode |
 | — | `awaiting_confirmation` | New per-post confirmation gate |
-| per-post Confirm button | Remove + Confirm All | One atomic, job-level confirmation action; removed posts excluded by construction |
+| per-post Confirm button | Remove + Confirm & Generate | One atomic, job-level confirmation action; removed posts excluded by construction |
 | — | `removed` status | Terminal off-ramp for a post excluded before confirmation |
 | — | real per-post/per-job cost in ₹ INR (OpenAI only) | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; Apify excluded entirely (free credits) |
+| single branded template | `job_post_brands` table, Facts4Genius + Facts Bytes | A post can be generated in either or both formats, reusing one Analyzer output |
 
 **Dependencies dropped:**
 

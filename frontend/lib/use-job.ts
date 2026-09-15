@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabaseBrowser } from "./supabase-browser";
-import type { Job, JobPost } from "./types";
+import type { Job, JobPost, JobPostBrand } from "./types";
 
 export const BUCKET = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || "generated";
 
 /**
  * Live view of one job.
  *
- * Realtime is the primary channel: Postgres change events on `job_posts`,
- * filtered server-side to this job, arrive as each post moves through a stage.
+ * Realtime is the primary channel: Postgres change events on `job_posts` and
+ * `job_post_brands`, filtered server-side to this job, arrive as each post
+ * (and each of its brand generations) moves through a stage.
  *
  * A fallback poll runs alongside it because a dropped websocket is silent --
  * without it a visitor could sit watching "analyzing 3/10" forever while the
@@ -20,6 +21,7 @@ export const BUCKET = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || "generated";
 export function useJob(jobId: string) {
   const [job, setJob] = useState<Job | null>(null);
   const [posts, setPosts] = useState<JobPost[]>([]);
+  const [brands, setBrands] = useState<JobPostBrand[]>([]);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +30,10 @@ export function useJob(jobId: string) {
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
-    const [jobResult, postsResult] = await Promise.all([
+    const [jobResult, postsResult, brandsResult] = await Promise.all([
       sb.from("jobs").select("*").eq("id", jobId).maybeSingle(),
       sb.from("job_posts").select("*").eq("job_id", jobId).order("rank", { ascending: true }),
+      sb.from("job_post_brands").select("*").eq("job_id", jobId),
     ]);
 
     if (jobResult.error) {
@@ -45,6 +48,9 @@ export function useJob(jobId: string) {
 
     if (!postsResult.error && postsResult.data) {
       setPosts(postsResult.data as JobPost[]);
+    }
+    if (!brandsResult.error && brandsResult.data) {
+      setBrands(brandsResult.data as JobPostBrand[]);
     }
     setLoading(false);
   }, [jobId]);
@@ -71,6 +77,24 @@ export function useJob(jobId: string) {
             const next = index === -1 ? [...current, incoming] : current.slice();
             if (index !== -1) next[index] = incoming;
             return next.sort((a, b) => a.rank - b.rank);
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "job_post_brands", filter: `job_id=eq.${jobId}` },
+        (payload) => {
+          setBrands((current) => {
+            if (payload.eventType === "DELETE") {
+              const goneId = (payload.old as { id?: string })?.id;
+              return current.filter((b) => b.id !== goneId);
+            }
+            const incoming = payload.new as JobPostBrand;
+            if (!incoming?.id) return current;
+            const index = current.findIndex((b) => b.id === incoming.id);
+            const next = index === -1 ? [...current, incoming] : current.slice();
+            if (index !== -1) next[index] = incoming;
+            return next;
           });
         }
       )
@@ -121,7 +145,13 @@ export function useJob(jobId: string) {
     return () => clearTimeout(timer);
   }, [load]);
 
-  return { job, posts, loading, live, error, reload: load };
+  /** This post's brand rows (0, 1, or 2), for PostCard's toggle/generate-other-brand logic. */
+  const brandsForPost = useCallback(
+    (postId: string) => brands.filter((b) => b.post_id === postId),
+    [brands]
+  );
+
+  return { job, posts, brands, brandsForPost, loading, live, error, reload: load };
 }
 
 /** Private-bucket objects are only reachable through a short-lived signed URL. */

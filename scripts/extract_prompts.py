@@ -1,15 +1,26 @@
 """
-Extracts the two protected prompts byte-for-byte from the original pipeline
-source files and emits `backend/_lib/prompts.py` for the new project.
+Extracts the three protected prompts byte-for-byte from their sources and
+emits `backend/_lib/prompts.py` for the new project.
 
-The ONLY modification applied is the single approved edit to the Generator
-prompt: two bullets appended to the "Image-to-Text Transition" section that
-pin the black gradient overlay's start to the vertical midpoint of the
-"INSTAGRAM | FACTS4GENIUS" brand text line.
+Two of the three (VISION_PROMPT, GENERATOR_PROMPT) come from the original
+pipeline's source files. The ONLY modification applied to either is the
+single approved edit to GENERATOR_PROMPT: two bullets appended to the
+"Image-to-Text Transition" section that pin the black gradient overlay's
+start to the vertical midpoint of the "INSTAGRAM | FACTS4GENIUS" brand text
+line. Nothing else in either is altered.
 
-Nothing else in either prompt is altered. A hash check at the end proves the
-vision prompt is untouched and that the generator prompt differs ONLY by the
-two inserted lines.
+The third (FACTSBYTES_GENERATOR_PROMPT) is the Facts Bytes brand's
+image-generation prompt, provided directly by the project owner rather than
+extracted from an existing pipeline file. It has no "original source .py" to
+diff against, so its canonical source-of-truth artifact is instead
+`scripts/factsbytes_prompt_source.txt` -- copied verbatim from what was
+provided, byte for byte, with ZERO modifications of any kind (unlike
+GENERATOR_PROMPT, there is no approved edit for this one). This script reads
+that file and copies it into prompts.py unmodified.
+
+A hash check at the end proves the vision prompt is untouched, the generator
+prompt differs from its source ONLY by the two inserted lines, and the Facts
+Bytes prompt is byte-identical to its own source file.
 """
 
 import hashlib
@@ -67,11 +78,33 @@ removed = [ln for ln in before if ln not in after]
 if len(after) - len(before) != 2 or removed:
     sys.exit(f"FATAL: diff is not exactly +2/-0. added={len(added)} removed={len(removed)}")
 
+# ------------------------------------------------------- Facts Bytes prompt
+FACTSBYTES_SOURCE_PATH = DEST / "scripts" / "factsbytes_prompt_source.txt"
+if not FACTSBYTES_SOURCE_PATH.exists():
+    sys.exit(f"FATAL: {FACTSBYTES_SOURCE_PATH} not found.")
+FACTSBYTES_GENERATOR_PROMPT = FACTSBYTES_SOURCE_PATH.read_text(encoding="utf-8")
+
+fb_brace_tokens = set(re.findall(r"\{([^}]*)\}", FACTSBYTES_GENERATOR_PROMPT))
+if fb_brace_tokens:
+    sys.exit(
+        f"FATAL: unexpected {{...}} placeholders in the Facts Bytes prompt: {fb_brace_tokens} "
+        "-- it uses bracketed [Prompt N : ...] tokens, not .format() braces."
+    )
+FB_TOKEN_1 = "[Prompt 1 : Image description]"
+FB_TOKEN_2 = "[Prompt 2 : Text as it is]"
+if FACTSBYTES_GENERATOR_PROMPT.count(FB_TOKEN_1) != 1 or FACTSBYTES_GENERATOR_PROMPT.count(FB_TOKEN_2) != 1:
+    sys.exit(
+        "FATAL: Facts Bytes prompt must contain each variable-input token exactly once: "
+        f"{FB_TOKEN_1!r} x{FACTSBYTES_GENERATOR_PROMPT.count(FB_TOKEN_1)}, "
+        f"{FB_TOKEN_2!r} x{FACTSBYTES_GENERATOR_PROMPT.count(FB_TOKEN_2)}"
+    )
+
 print("=== VERIFICATION ===")
-print(f"vision prompt      : {len(VISION_PROMPT)} chars, sha256={hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:16]}")
-print(f"generator (source) : {len(GENERATOR_PROMPT_RAW)} chars, sha256={hashlib.sha256(GENERATOR_PROMPT_RAW.encode()).hexdigest()[:16]}")
-print(f"generator (ported) : {len(GENERATOR_PROMPT)} chars  (+{len(GENERATOR_PROMPT) - len(GENERATOR_PROMPT_RAW)} chars, +2 lines, -0 lines)")
-print("\nLines added (the one approved edit):")
+print(f"vision prompt        : {len(VISION_PROMPT)} chars, sha256={hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:16]}")
+print(f"generator (source)   : {len(GENERATOR_PROMPT_RAW)} chars, sha256={hashlib.sha256(GENERATOR_PROMPT_RAW.encode()).hexdigest()[:16]}")
+print(f"generator (ported)   : {len(GENERATOR_PROMPT)} chars  (+{len(GENERATOR_PROMPT) - len(GENERATOR_PROMPT_RAW)} chars, +2 lines, -0 lines)")
+print(f"facts bytes generator: {len(FACTSBYTES_GENERATOR_PROMPT)} chars, sha256={hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest()[:16]} (byte-identical to source, zero edits)")
+print("\nLines added to GENERATOR_PROMPT (the one approved edit):")
 for ln in added:
     print("  + " + ln.rstrip("\n"))
 
@@ -79,21 +112,25 @@ for ln in added:
 header = '''"""
 PROTECTED INTELLECTUAL PROPERTY -- DO NOT EDIT.
 
-These two prompts are the core IP of this project. They were extracted
-byte-for-byte from the original pipeline by a script
-(scripts/extract_prompts.py) rather than retyped, to guarantee fidelity:
+These three prompts are the core IP of this project. They were extracted
+byte-for-byte by a script (scripts/extract_prompts.py) rather than retyped,
+to guarantee fidelity:
 
-  VISION_PROMPT     <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim)
-  GENERATOR_PROMPT  <- nodes/agent_3_generator.py :: formatted_prompt
+  VISION_PROMPT               <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim)
+  GENERATOR_PROMPT             <- nodes/agent_3_generator.py :: formatted_prompt
+  FACTSBYTES_GENERATOR_PROMPT <- scripts/factsbytes_prompt_source.txt          (verbatim)
 
-GENERATOR_PROMPT contains exactly ONE authorised modification versus the
+GENERATOR_PROMPT contains exactly ONE authorised modification versus its
 source: two bullets appended to the "Image-to-Text Transition" section pinning
 the black gradient overlay's start to the vertical midpoint of the
 "INSTAGRAM | FACTS4GENIUS" brand text line. Nothing else differs -- not the
 border rules, not the branding text, not the layout instructions, not the
 wording of any other sentence.
 
-Do not rewrite, reformat, shorten, "improve", or reinterpret either prompt.
+FACTSBYTES_GENERATOR_PROMPT has ZERO modifications versus its source -- no
+approved edit exists for this one. It is copied character for character.
+
+Do not rewrite, reformat, shorten, "improve", or reinterpret any of the three.
 Integrity is enforced at import time by the checksums below; if you change a
 prompt the module will refuse to load.
 """
@@ -118,13 +155,29 @@ body = (
     + "        visual_prompt=visual_prompt,\n"
     + "        text_transcription=text_transcription,\n"
     + "    )\n\n\n"
+    + "# Bracketed tokens, not .format() braces -- substituted with plain .replace()\n"
+    + "# so a stray { or } anywhere in the analyzer output can never break rendering\n"
+    + "# the way it could with .format().\n"
+    + "FACTSBYTES_GENERATOR_PROMPT = "
+    + repr(FACTSBYTES_GENERATOR_PROMPT)
+    + "\n\n\n"
+    + "def render_factsbytes_prompt(image_description: str, text_as_is: str) -> str:\n"
+    + '    """Fill the Facts Bytes prompt by replacing its two bracketed tokens."""\n'
+    + "    return (\n"
+    + "        FACTSBYTES_GENERATOR_PROMPT\n"
+    + f"        .replace({FB_TOKEN_1!r}, image_description)\n"
+    + f"        .replace({FB_TOKEN_2!r}, text_as_is)\n"
+    + "    )\n\n\n"
     + "# --- integrity guard -------------------------------------------------------\n"
     + f'_VISION_SHA256 = "{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()}"\n'
-    + f'_GENERATOR_SHA256 = "{hashlib.sha256(GENERATOR_PROMPT.encode()).hexdigest()}"\n\n'
+    + f'_GENERATOR_SHA256 = "{hashlib.sha256(GENERATOR_PROMPT.encode()).hexdigest()}"\n'
+    + f'_FACTSBYTES_SHA256 = "{hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest()}"\n\n'
     + "if hashlib.sha256(VISION_PROMPT.encode()).hexdigest() != _VISION_SHA256:\n"
     + '    raise RuntimeError("VISION_PROMPT has been modified -- this prompt is protected IP.")\n'
     + "if hashlib.sha256(GENERATOR_PROMPT.encode()).hexdigest() != _GENERATOR_SHA256:\n"
     + '    raise RuntimeError("GENERATOR_PROMPT has been modified -- this prompt is protected IP.")\n'
+    + "if hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest() != _FACTSBYTES_SHA256:\n"
+    + '    raise RuntimeError("FACTSBYTES_GENERATOR_PROMPT has been modified -- this prompt is protected IP.")\n'
 )
 
 out = DEST / "backend" / "_lib" / "prompts.py"
@@ -141,6 +194,10 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert mod.VISION_PROMPT == VISION_PROMPT, "round-trip mismatch: VISION_PROMPT"
 assert mod.GENERATOR_PROMPT == GENERATOR_PROMPT, "round-trip mismatch: GENERATOR_PROMPT"
+assert mod.FACTSBYTES_GENERATOR_PROMPT == FACTSBYTES_GENERATOR_PROMPT, "round-trip mismatch: FACTSBYTES_GENERATOR_PROMPT"
 rendered = mod.render_generator_prompt("VP", "TT")
 assert "VP" in rendered and "TT" in rendered, "placeholder render failed"
+fb_rendered = mod.render_factsbytes_prompt("IMGDESC", "TEXTASIS")
+assert "IMGDESC" in fb_rendered and "TEXTASIS" in fb_rendered, "facts bytes placeholder render failed"
+assert "[Prompt 1" not in fb_rendered and "[Prompt 2" not in fb_rendered, "facts bytes token left unsubstituted"
 print("Round-trip check: PASS (module re-imports to identical strings)")

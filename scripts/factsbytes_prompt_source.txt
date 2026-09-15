@@ -1,0 +1,23 @@
+Create a professional vertical social-media fact post using the exact formatting structure below.
+FIXED FORMAT:
+• Upper section: Prompt 1 is the ONLY source for the main visual. Make it realistic, detailed, and visually engaging. The image fills the entire available width and may extend fully to the left and right edges of the post.
+• Lower section: A smooth black gradient begins EXACTLY around the central logo divider and progressively becomes completely black behind the text. The image must fade naturally into this gradient with no hard boundary.
+• At the exact horizontal center, place a small glowing light-bulb-style logo with "FACT BYTES" directly underneath it.
+• Place two thin horizontal yellow lines on the same level as the logo: one extending left and one extending right. The lines must be perfectly symmetrical and centered.
+• IMPORTANT: The yellow lines MUST NOT touch the left or right edges. Keep equal, clearly visible horizontal padding between each line endpoint and the post boundaries.
+• The logo/divider and the entire text block must share the same narrower horizontal safe area. Maintain consistent left and right padding.
+• Below the divider, place Prompt 2 as the ONLY text content.
+• IMPORTANT: The text MUST NOT touch either side of the post. Keep equal horizontal padding on both sides. Never allow any word or line to reach the boundaries. Automatically adjust font size and line breaks to remain comfortably inside this safe area.
+• Typography: extremely bold, clean, condensed sans-serif, uppercase, highly readable, matching the reference style and proportions. Center-align all text.
+• Use ONLY bright yellow and white text. Highlight important portions in yellow and keep remaining portions white.
+• The entire area behind the text must be deep solid black.
+• Maintain generous and consistent spacing between the divider, text lines, and bottom edge.
+• No additional logos, icons, borders, decorations, text, shadows, outlines, or graphic elements.
+• Preserve the exact visual hierarchy, proportions, spacing, typography weight, divider treatment, and overall appearance of the reference.
+SPACING RULE:
+The main IMAGE uses the full available width. The YELLOW DIVIDER and TEXT use a narrower centered content area with equal left/right padding. The divider and text must never touch the post boundaries.
+VARIABLE INPUTS:
+Prompt 1:
+[Prompt 1 : Image description]
+Prompt 2:
+[Prompt 2 : Text as it is]

@@ -1,17 +1,22 @@
 """
-Guard test for the two protected prompts.  Run:  npm run verify:prompts
+Guard test for the three protected prompts.  Run:  npm run verify:prompts
 
 Two independent checks:
 
-1. ALWAYS -- import `api/_lib/prompts.py`, which self-verifies its contents
-   against embedded SHA-256 checksums and refuses to load if either prompt was
-   edited.
+1. ALWAYS -- import `backend/_lib/prompts.py`, which self-verifies its
+   contents against embedded SHA-256 checksums and refuses to load if any of
+   the three prompts was edited.
 
-2. WHEN AVAILABLE -- if the original pipeline is reachable (pass its path, or
-   set ORIGINAL_PIPELINE_DIR), diff both prompts against the source of truth
-   and assert that:
-       - VISION_PROMPT is byte-for-byte identical
-       - GENERATOR_PROMPT differs by EXACTLY the two authorised gradient lines
+2. WHEN AVAILABLE:
+   - If the original pipeline is reachable (pass its path, or set
+     ORIGINAL_PIPELINE_DIR), diff VISION_PROMPT and GENERATOR_PROMPT against
+     the source of truth and assert that VISION_PROMPT is byte-for-byte
+     identical and GENERATOR_PROMPT differs by EXACTLY the two authorised
+     gradient lines.
+   - Always (no external dependency): diff FACTSBYTES_GENERATOR_PROMPT
+     against scripts/factsbytes_prompt_source.txt and assert byte-for-byte
+     identity -- there is no approved edit for this one, so ANY difference
+     is a failure.
 """
 
 import os
@@ -32,15 +37,17 @@ def main() -> int:
     # --- check 1: embedded integrity guard ---------------------------------
     try:
         from _lib.prompts import (  # noqa: PLC0415
+            FACTSBYTES_GENERATOR_PROMPT,
             GENERATOR_PROMPT,
             VISION_PROMPT,
+            render_factsbytes_prompt,
             render_generator_prompt,
         )
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
         return 1
 
-    print("PASS  embedded checksums match (prompts are unmodified)")
+    print("PASS  embedded checksums match (all three prompts are unmodified)")
 
     rendered = render_generator_prompt(visual_prompt="<VP>", text_transcription="<TT>")
     if "<VP>" not in rendered or "<TT>" not in rendered:
@@ -51,7 +58,28 @@ def main() -> int:
         return 1
     print("PASS  generator prompt renders both placeholders")
 
-    # --- check 2: diff against the original pipeline, if reachable ----------
+    fb_rendered = render_factsbytes_prompt(image_description="<IMGDESC>", text_as_is="<TEXTASIS>")
+    if "<IMGDESC>" not in fb_rendered or "<TEXTASIS>" not in fb_rendered:
+        print("FAIL: Facts Bytes prompt tokens did not render")
+        return 1
+    if "[Prompt 1" in fb_rendered or "[Prompt 2" in fb_rendered:
+        print("FAIL: unsubstituted [Prompt N : ...] token left in the Facts Bytes prompt")
+        return 1
+    print("PASS  Facts Bytes prompt renders both bracketed tokens")
+
+    # --- check 2a: Facts Bytes prompt vs its own source file (always) -------
+    fb_source_path = REPO / "scripts" / "factsbytes_prompt_source.txt"
+    if not fb_source_path.exists():
+        print(f"FAIL: {fb_source_path} not found -- cannot verify Facts Bytes prompt fidelity")
+        return 1
+    fb_source = fb_source_path.read_text(encoding="utf-8")
+    if FACTSBYTES_GENERATOR_PROMPT != fb_source:
+        print("FAIL: FACTSBYTES_GENERATOR_PROMPT differs from scripts/factsbytes_prompt_source.txt")
+        print("      (there is no approved edit for this prompt -- ANY difference is a failure)")
+        return 1
+    print(f"PASS  FACTSBYTES_GENERATOR_PROMPT byte-identical to its source file ({len(FACTSBYTES_GENERATOR_PROMPT)} chars)")
+
+    # --- check 2b: diff against the original pipeline, if reachable --------
     candidates = []
     if len(sys.argv) > 1:
         candidates.append(Path(sys.argv[1]))
@@ -66,7 +94,7 @@ def main() -> int:
             break
 
     if source is None:
-        print("SKIP  original pipeline not reachable; checksum check only")
+        print("SKIP  original pipeline not reachable; checksum + Facts Bytes checks only")
         print("      (pass its path as an argument to run the full diff)")
         return 0
 

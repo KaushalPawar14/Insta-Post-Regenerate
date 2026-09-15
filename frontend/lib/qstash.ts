@@ -37,21 +37,23 @@ export async function enqueueScrape(jobId: string): Promise<void> {
 }
 
 /**
- * Enqueue image generation for exactly one post.
+ * Enqueue image generation for exactly one (post, brand) pair. A post
+ * confirmed for both brands gets two of these calls -- one per brand --
+ * each running independently; the vision/analyze stage never repeats.
  *
  * `retries: 0` is deliberate. Generation is the only step that costs real
  * money, and a retry after a 300s timeout cannot know whether OpenAI already
  * produced (and billed for) an image. Failing visibly and letting the user
- * press Retry is cheaper and more honest than retrying blind.
+ * press Retry (per-brand) is cheaper and more honest than retrying blind.
  *
  * No `deduplicationId` either: the double-click guard is the atomic status
- * transition in Postgres, and a dedup id would silently swallow a legitimate
- * Retry of a previously failed post.
+ * transition in Postgres (scoped to this post+brand), and a dedup id would
+ * silently swallow a legitimate Retry of a previously failed brand.
  */
-export async function enqueueGenerate(postRowId: string): Promise<void> {
+export async function enqueueGenerate(postRowId: string, brand: string): Promise<void> {
   await qstash().publishJSON({
     url: `${baseUrl()}/api/generate`,
-    body: { post_row_id: postRowId },
+    body: { post_row_id: postRowId, brand },
     retries: 0,
     timeout: DESTINATION_TIMEOUT,
   });

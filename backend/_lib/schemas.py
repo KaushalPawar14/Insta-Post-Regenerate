@@ -54,6 +54,28 @@ class PostStatus:
     REMOVED = "removed"
 
 
+class Brand:
+    """The two image-generation brands. Matches job_post_brands.brand's CHECK
+    constraint exactly -- keep both in sync if either ever changes."""
+
+    FACTS4GENIUS = "facts4genius"
+    FACTSBYTES = "factsbytes"
+
+
+ALL_BRANDS = (Brand.FACTS4GENIUS, Brand.FACTSBYTES)
+
+
+class BrandGenerationStatus:
+    """Status values for one job_post_brands row -- a SUBSET of PostStatus
+    below (only the generation-phase values are meaningful for a single
+    brand's own generation attempt)."""
+
+    QUEUED_FOR_GENERATION = "queued_for_generation"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED_GENERATION = "failed_generation"
+
+
 class JobStatus:
     PENDING = "pending"
     SCRAPING = "scraping"

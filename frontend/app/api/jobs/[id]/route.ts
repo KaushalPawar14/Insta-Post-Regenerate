@@ -30,15 +30,18 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
 
   if (!job) return json({ error: "Job not found." }, 404);
 
-  const { data: posts } = await sb
-    .from("job_posts")
-    .select("thumb_path, final_image_path")
-    .eq("job_id", jobId)
-    .eq("user_id", userId);
+  const [{ data: posts }, { data: brandRows }] = await Promise.all([
+    sb.from("job_posts").select("thumb_path, final_image_path").eq("job_id", jobId).eq("user_id", userId),
+    // Per-brand generated images (facts4genius/factsbytes) live here, not on
+    // job_posts, for every post generated after the multi-brand migration --
+    // job_posts.final_image_path above only ever covers pre-migration posts.
+    sb.from("job_post_brands").select("final_image_path").eq("job_id", jobId).eq("user_id", userId),
+  ]);
 
-  const paths = (posts ?? [])
-    .flatMap((p) => [p.thumb_path, p.final_image_path])
-    .filter((p): p is string => Boolean(p));
+  const paths = [
+    ...(posts ?? []).flatMap((p) => [p.thumb_path, p.final_image_path]),
+    ...(brandRows ?? []).map((b) => b.final_image_path),
+  ].filter((p): p is string => Boolean(p));
 
   if (paths.length) {
     const { error: storageError } = await sb.storage.from(BUCKET).remove(paths);
@@ -47,7 +50,7 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     if (storageError) console.error("[delete-job] storage cleanup failed:", storageError.message);
   }
 
-  // job_posts rows go with it via ON DELETE CASCADE.
+  // job_posts (and, in turn, job_post_brands) rows go with it via ON DELETE CASCADE.
   const { error } = await sb.from("jobs").delete().eq("id", jobId).eq("user_id", userId);
   if (error) return json({ error: `Could not delete the job: ${error.message}` }, 500);
 

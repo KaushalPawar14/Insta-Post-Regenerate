@@ -134,6 +134,67 @@ def count_posts_by_status(job_id: str) -> Dict[str, int]:
     return counts
 
 
+# --- job_post_brands ---------------------------------------------------------
+# One row per (post, brand) generation. See migration_004_multi_brand.sql for
+# the full rationale for a separate table rather than parallel columns.
+def get_post_brand(post_id: str, brand: str) -> Optional[Dict[str, Any]]:
+    res = (
+        sb()
+        .table("job_post_brands")
+        .select("*")
+        .eq("post_id", post_id)
+        .eq("brand", brand)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def list_post_brands(post_id: str) -> List[Dict[str, Any]]:
+    res = sb().table("job_post_brands").select("*").eq("post_id", post_id).execute()
+    return res.data or []
+
+
+def insert_post_brand(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    res = sb().table("job_post_brands").insert(row).execute()
+    return res.data[0] if res.data else None
+
+
+def update_post_brand(post_id: str, brand: str, **fields: Any) -> None:
+    if fields:
+        sb().table("job_post_brands").update(fields).eq("post_id", post_id).eq("brand", brand).execute()
+
+
+def fail_post_brand(post_id: str, brand: str, message: str) -> None:
+    update_post_brand(post_id, brand, status="failed_generation", error=_truncate(message))
+
+
+def claim_post_brand(
+    post_id: str, brand: str, *, expect_status: str, set_status: str, **fields: Any
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically move a (post, brand) generation from `expect_status` to
+    `set_status`. Same compare-and-swap pattern as `claim_post` -- a single
+    `UPDATE ... WHERE post_id = ? AND brand = ? AND status = ?` is atomic in
+    Postgres, so this is what guarantees the paid images.edit call for one
+    brand can be reached by AT MOST ONE invocation, no matter how many times
+    QStash redelivers the message for that (post, brand) pair.
+
+    Returns the updated row, or None if the row was not in `expect_status`.
+    """
+    payload = {"status": set_status, **fields}
+    res = (
+        sb()
+        .table("job_post_brands")
+        .update(payload)
+        .eq("post_id", post_id)
+        .eq("brand", brand)
+        .eq("status", expect_status)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 # --- storage ---------------------------------------------------------------
 def storage_path(user_id: str, job_id: str, filename: str) -> str:
     """

@@ -1,21 +1,25 @@
 """
 PROTECTED INTELLECTUAL PROPERTY -- DO NOT EDIT.
 
-These two prompts are the core IP of this project. They were extracted
-byte-for-byte from the original pipeline by a script
-(scripts/extract_prompts.py) rather than retyped, to guarantee fidelity:
+These three prompts are the core IP of this project. They were extracted
+byte-for-byte by a script (scripts/extract_prompts.py) rather than retyped,
+to guarantee fidelity:
 
-  VISION_PROMPT     <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim)
-  GENERATOR_PROMPT  <- nodes/agent_3_generator.py :: formatted_prompt
+  VISION_PROMPT               <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim)
+  GENERATOR_PROMPT             <- nodes/agent_3_generator.py :: formatted_prompt
+  FACTSBYTES_GENERATOR_PROMPT <- scripts/factsbytes_prompt_source.txt          (verbatim)
 
-GENERATOR_PROMPT contains exactly ONE authorised modification versus the
+GENERATOR_PROMPT contains exactly ONE authorised modification versus its
 source: two bullets appended to the "Image-to-Text Transition" section pinning
 the black gradient overlay's start to the vertical midpoint of the
 "INSTAGRAM | FACTS4GENIUS" brand text line. Nothing else differs -- not the
 border rules, not the branding text, not the layout instructions, not the
 wording of any other sentence.
 
-Do not rewrite, reformat, shorten, "improve", or reinterpret either prompt.
+FACTSBYTES_GENERATOR_PROMPT has ZERO modifications versus its source -- no
+approved edit exists for this one. It is copied character for character.
+
+Do not rewrite, reformat, shorten, "improve", or reinterpret any of the three.
 Integrity is enforced at import time by the checksums below; if you change a
 prompt the module will refuse to load.
 """
@@ -37,11 +41,29 @@ def render_generator_prompt(visual_prompt: str, text_transcription: str) -> str:
     )
 
 
+# Bracketed tokens, not .format() braces -- substituted with plain .replace()
+# so a stray { or } anywhere in the analyzer output can never break rendering
+# the way it could with .format().
+FACTSBYTES_GENERATOR_PROMPT = 'Create a professional vertical social-media fact post using the exact formatting structure below.\nFIXED FORMAT:\n• Upper section: Prompt 1 is the ONLY source for the main visual. Make it realistic, detailed, and visually engaging. The image fills the entire available width and may extend fully to the left and right edges of the post.\n• Lower section: A smooth black gradient begins EXACTLY around the central logo divider and progressively becomes completely black behind the text. The image must fade naturally into this gradient with no hard boundary.\n• At the exact horizontal center, place a small glowing light-bulb-style logo with "FACT BYTES" directly underneath it.\n• Place two thin horizontal yellow lines on the same level as the logo: one extending left and one extending right. The lines must be perfectly symmetrical and centered.\n• IMPORTANT: The yellow lines MUST NOT touch the left or right edges. Keep equal, clearly visible horizontal padding between each line endpoint and the post boundaries.\n• The logo/divider and the entire text block must share the same narrower horizontal safe area. Maintain consistent left and right padding.\n• Below the divider, place Prompt 2 as the ONLY text content.\n• IMPORTANT: The text MUST NOT touch either side of the post. Keep equal horizontal padding on both sides. Never allow any word or line to reach the boundaries. Automatically adjust font size and line breaks to remain comfortably inside this safe area.\n• Typography: extremely bold, clean, condensed sans-serif, uppercase, highly readable, matching the reference style and proportions. Center-align all text.\n• Use ONLY bright yellow and white text. Highlight important portions in yellow and keep remaining portions white.\n• The entire area behind the text must be deep solid black.\n• Maintain generous and consistent spacing between the divider, text lines, and bottom edge.\n• No additional logos, icons, borders, decorations, text, shadows, outlines, or graphic elements.\n• Preserve the exact visual hierarchy, proportions, spacing, typography weight, divider treatment, and overall appearance of the reference.\nSPACING RULE:\nThe main IMAGE uses the full available width. The YELLOW DIVIDER and TEXT use a narrower centered content area with equal left/right padding. The divider and text must never touch the post boundaries.\nVARIABLE INPUTS:\nPrompt 1:\n[Prompt 1 : Image description]\nPrompt 2:\n[Prompt 2 : Text as it is]'
+
+
+def render_factsbytes_prompt(image_description: str, text_as_is: str) -> str:
+    """Fill the Facts Bytes prompt by replacing its two bracketed tokens."""
+    return (
+        FACTSBYTES_GENERATOR_PROMPT
+        .replace('[Prompt 1 : Image description]', image_description)
+        .replace('[Prompt 2 : Text as it is]', text_as_is)
+    )
+
+
 # --- integrity guard -------------------------------------------------------
 _VISION_SHA256 = "afbc9025a9763b56bcc805f039a319776afa7fed4647bb16d0adaba06a214b00"
 _GENERATOR_SHA256 = "70250669c94b24315a7fd94d1762b3fb1e39ceb25d250b561be44aee05be43ac"
+_FACTSBYTES_SHA256 = "17b80fa1b819022f79795ddc45cb3dbfdb2cd0c9619c3d4bff93dbb91017ee76"
 
 if hashlib.sha256(VISION_PROMPT.encode()).hexdigest() != _VISION_SHA256:
     raise RuntimeError("VISION_PROMPT has been modified -- this prompt is protected IP.")
 if hashlib.sha256(GENERATOR_PROMPT.encode()).hexdigest() != _GENERATOR_SHA256:
     raise RuntimeError("GENERATOR_PROMPT has been modified -- this prompt is protected IP.")
+if hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest() != _FACTSBYTES_SHA256:
+    raise RuntimeError("FACTSBYTES_GENERATOR_PROMPT has been modified -- this prompt is protected IP.")

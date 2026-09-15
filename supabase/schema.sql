@@ -113,6 +113,40 @@ create table if not exists public.job_posts (
 create index if not exists job_posts_job_idx  on public.job_posts (job_id, rank);
 create index if not exists job_posts_user_idx on public.job_posts (user_id);
 
+-- ------------------------------------------------------- job_post_brands --
+-- One row per (post, brand) generation. A post can have 0, 1, or 2 of these
+-- (Facts4Genius, Facts Bytes), each independently claimable/retryable/
+-- costed. job_posts.status is a ROLLUP over this table's rows for that post
+-- (see backend/_lib/pipeline.py's refresh_post_status) -- it keeps its exact
+-- original enum and meaning, so PostStepper/stage-breakdown/ETA needed no
+-- changes. See migration_004_multi_brand.sql for the full rationale.
+create table if not exists public.job_post_brands (
+  id                     uuid primary key default gen_random_uuid(),
+  post_id                uuid not null references public.job_posts (id) on delete cascade,
+  job_id                 uuid not null references public.jobs (id) on delete cascade,
+  user_id                uuid not null references auth.users (id) on delete cascade,
+
+  brand                  text not null check (brand in ('facts4genius', 'factsbytes')),
+
+  status                 text not null default 'queued_for_generation'
+                           check (status in ('queued_for_generation', 'generating',
+                                             'completed', 'failed_generation')),
+
+  final_image_path       text,
+  image_cost_usd         numeric not null default 0,
+  error                  text,
+
+  generate_started_at    timestamptz,
+  generate_completed_at  timestamptz,
+  created_at             timestamptz not null default now(),
+
+  unique (post_id, brand)
+);
+
+create index if not exists job_post_brands_post_idx on public.job_post_brands (post_id);
+create index if not exists job_post_brands_job_idx  on public.job_post_brands (job_id);
+create index if not exists job_post_brands_user_idx on public.job_post_brands (user_id);
+
 -- =========================================================================
 --  Row Level Security
 --
@@ -123,8 +157,9 @@ create index if not exists job_posts_user_idx on public.job_posts (user_id);
 --  The Python functions use the service_role key, which bypasses RLS
 --  entirely; they set user_id explicitly on every write.
 -- =========================================================================
-alter table public.jobs      enable row level security;
-alter table public.job_posts enable row level security;
+alter table public.jobs             enable row level security;
+alter table public.job_posts        enable row level security;
+alter table public.job_post_brands  enable row level security;
 
 drop policy if exists "own jobs: select" on public.jobs;
 drop policy if exists "own jobs: insert" on public.jobs;
@@ -156,6 +191,21 @@ create policy "own posts: update" on public.job_posts
 create policy "own posts: delete" on public.job_posts
   for delete to authenticated using (user_id = (select auth.uid()));
 
+drop policy if exists "own post brands: select" on public.job_post_brands;
+drop policy if exists "own post brands: insert" on public.job_post_brands;
+drop policy if exists "own post brands: update" on public.job_post_brands;
+drop policy if exists "own post brands: delete" on public.job_post_brands;
+
+create policy "own post brands: select" on public.job_post_brands
+  for select to authenticated using (user_id = (select auth.uid()));
+create policy "own post brands: insert" on public.job_post_brands
+  for insert to authenticated with check (user_id = (select auth.uid()));
+create policy "own post brands: update" on public.job_post_brands
+  for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy "own post brands: delete" on public.job_post_brands
+  for delete to authenticated using (user_id = (select auth.uid()));
+
 -- =========================================================================
 --  Realtime
 --
@@ -163,8 +213,9 @@ create policy "own posts: delete" on public.job_posts
 --  what lets Supabase evaluate the RLS policy above against each change
 --  before deciding whether to deliver it to a subscriber.
 -- =========================================================================
-alter table public.jobs      replica identity full;
-alter table public.job_posts replica identity full;
+alter table public.jobs             replica identity full;
+alter table public.job_posts        replica identity full;
+alter table public.job_post_brands  replica identity full;
 
 do $$
 begin
@@ -180,6 +231,13 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'job_posts'
   ) then
     alter publication supabase_realtime add table public.job_posts;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'job_post_brands'
+  ) then
+    alter publication supabase_realtime add table public.job_post_brands;
   end if;
 end $$;
 

@@ -14,18 +14,24 @@ const SIGNED_URL_TTL_SECONDS = 3600;
  *
  *   - Looks up the job by `share_token` ONLY (never by id, never by any other
  *     field), using the service-role client. There is no RLS policy granting
- *     the `anon` role access to `jobs`/`job_posts` at all -- if this route
- *     didn't exist, an anonymous browser client could not read these tables
- *     under any query. The token match is enforced entirely in this server
- *     code, not by a database policy that could accidentally be broadened.
+ *     the `anon` role access to `jobs`/`job_posts`/`job_post_brands` at all --
+ *     if this route didn't exist, an anonymous browser client could not read
+ *     these tables under any query. The token match is enforced entirely in
+ *     this server code, not by a database policy that could accidentally be
+ *     broadened.
  *   - Returns ONLY: for the job, nothing (its id is used internally and never
- *     serialised into the response); for each post, only `post_id`,
- *     `caption`, and a short-lived signed image URL -- explicitly NOT status,
+ *     serialised into the response); for each post, `post_id`, `caption`,
+ *     and a `brands` array of `{brand, image_url}` -- explicitly NOT status,
  *     likes/comments, original_caption, cost fields, error text, or any
  *     other job's data.
- *   - Only posts with status = 'completed' are ever selected. A post still
- *     awaiting confirmation, removed, or failed is invisible here even if
- *     its job_id matches -- there is no way to reach it through this route.
+ *   - job_posts.status = 'completed' (the rollup: at least one brand
+ *     completed, nothing still in flight) selects which POSTS appear at
+ *     all -- a post still awaiting confirmation, removed, or with every
+ *     brand failed is invisible here. Within an included post, only that
+ *     post's job_post_brands rows with status = 'completed' are returned --
+ *     if one brand completed and the other failed or is still generating,
+ *     only the completed one appears, same "finished results only"
+ *     principle applied per brand instead of just per post.
  *   - A token that doesn't match any job returns a generic 404 `not_found`,
  *     not a 500 or a message that could reveal whether e.g. a job exists at
  *     all with a differently-cased or partial token.
@@ -49,31 +55,50 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ to
 
   const { data: posts, error } = await sb
     .from("job_posts")
-    .select("id, post_id, refined_caption, final_image_path")
+    .select("id, post_id, refined_caption")
     .eq("job_id", job.id)
     .eq("status", "completed")
     .order("rank", { ascending: true });
 
   if (error) return json({ error: "not_found" }, 404);
+  if (!posts?.length) return json({ posts: [] });
+
+  const postIds = posts.map((p) => p.id);
+  const { data: brandRows } = await sb
+    .from("job_post_brands")
+    .select("post_id, brand, final_image_path")
+    .in("post_id", postIds)
+    .eq("status", "completed");
 
   const bucket = bucketName();
+
   const results = await Promise.all(
-    (posts ?? []).map(async (post) => {
-      let image_url: string | null = null;
-      if (post.final_image_path) {
-        const { data: signed } = await sb.storage
-          .from(bucket)
-          .createSignedUrl(post.final_image_path, SIGNED_URL_TTL_SECONDS);
-        image_url = signed?.signedUrl ?? null;
-      }
+    posts.map(async (post) => {
+      const myBrandRows = (brandRows ?? []).filter((b) => b.post_id === post.id);
+      const brands = await Promise.all(
+        myBrandRows.map(async (b) => {
+          let image_url: string | null = null;
+          if (b.final_image_path) {
+            const { data: signed } = await sb.storage
+              .from(bucket)
+              .createSignedUrl(b.final_image_path, SIGNED_URL_TTL_SECONDS);
+            image_url = signed?.signedUrl ?? null;
+          }
+          return { brand: b.brand as string, image_url };
+        })
+      );
       return {
         id: post.id as string,
         post_id: post.post_id as string,
         caption: (post.refined_caption as string) || "",
-        image_url,
+        brands,
       };
     })
   );
 
-  return json({ posts: results });
+  // Defensive: a post whose rollup says "completed" should always have at
+  // least one completed brand row by construction, but if a race ever left
+  // one with none, there's nothing to show for it -- drop it rather than
+  // returning an empty card.
+  return json({ posts: results.filter((p) => p.brands.length > 0) });
 }

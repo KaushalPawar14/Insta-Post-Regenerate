@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from . import db
-from .schemas import JobStatus, PostStatus
+from .schemas import BrandGenerationStatus, JobStatus, PostStatus
 
 # A stage is considered abandoned once it has been "running" for longer than
 # Vercel's hard 300s ceiling plus a little slack -- at that point the function
@@ -66,40 +66,106 @@ def claim_analysis(row_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def claim_generation(row_id: str) -> Optional[Dict[str, Any]]:
+def claim_brand_generation(post_id: str, brand: str) -> Optional[Dict[str, Any]]:
     """
-    Claim a post for image generation.
+    Claim one (post, brand) generation.
 
-    Deliberately STRICTER than `claim_analysis`: it only ever claims a post
-    that is sitting in `queued_for_generation`. Generation costs real money, so
-    an automatic QStash retry must never re-trigger it. If a generation was
-    abandoned, the post is marked `failed_generation` and the user gets an
-    explicit Retry button instead.
+    Mirrors the pre-multi-brand `claim_generation`, retargeted at
+    `job_post_brands`: it only ever claims a row sitting in
+    `queued_for_generation`, and recovers a row abandoned mid-generation by
+    marking it `failed_generation` (so the user gets an explicit retry
+    affordance for that ONE brand, rather than the whole post) instead of
+    leaving it stuck forever. Generation costs real money, so an automatic
+    QStash retry must never silently re-trigger it -- claiming is what makes
+    that impossible.
+
+    NOTE: there used to be a post-level `claim_generation` here, operating
+    directly on job_posts. It's been removed rather than left in place
+    unused (unlike the Apify-cost change's precedent of leaving unused code
+    around) because leaving it would be actively WRONG under the new model,
+    not just unused: job_posts.status is now a rollup computed by
+    `refresh_post_status` below, not a value a generation stage claims and
+    sets directly. A stray call to the old function would silently no-op in
+    a confusing way rather than doing anything either correct or harmless.
     """
-    row = db.claim_post(
-        row_id,
-        expect_status=PostStatus.QUEUED_FOR_GENERATION,
-        set_status=PostStatus.GENERATING,
+    row = db.claim_post_brand(
+        post_id,
+        brand,
+        expect_status=BrandGenerationStatus.QUEUED_FOR_GENERATION,
+        set_status=BrandGenerationStatus.GENERATING,
         generate_started_at=now_iso(),
         error=None,
     )
     if row:
         return row
 
-    current = db.get_post(row_id)
+    current = db.get_post_brand(post_id, brand)
     if not current:
         return None
 
-    if current["status"] == PostStatus.GENERATING and is_stale(
+    if current["status"] == BrandGenerationStatus.GENERATING and is_stale(
         current.get("generate_started_at")
     ):
-        db.fail_post(
-            row_id,
-            PostStatus.FAILED_GENERATION,
+        db.fail_post_brand(
+            post_id,
+            brand,
             "Image generation did not finish within the 300s function limit. "
             "Press Retry to try again.",
         )
     return None
+
+
+def compute_post_rollup_status(brand_rows: list) -> str:
+    """
+    Pure function: given all of a post's job_post_brands rows, return the
+    job_posts.status rollup value. job_posts.status keeps its EXACT existing
+    enum -- this is what lets PostStepper, the stage-breakdown UI, and the
+    ETA calculation stay completely unchanged.
+
+        any row generating                        -> generating
+        some (not all) rows still queued           -> generating
+        all rows still queued                      -> queued_for_generation
+        all rows terminal, >=1 completed           -> completed
+        all rows terminal, none completed          -> failed_generation
+    """
+    if not brand_rows:
+        return PostStatus.QUEUED_FOR_GENERATION
+    statuses = [r["status"] for r in brand_rows]
+    if any(s == BrandGenerationStatus.GENERATING for s in statuses):
+        return PostStatus.GENERATING
+    if any(s == BrandGenerationStatus.QUEUED_FOR_GENERATION for s in statuses):
+        if all(s == BrandGenerationStatus.QUEUED_FOR_GENERATION for s in statuses):
+            return PostStatus.QUEUED_FOR_GENERATION
+        return PostStatus.GENERATING
+    # every row is terminal (completed or failed_generation) at this point
+    if any(s == BrandGenerationStatus.COMPLETED for s in statuses):
+        return PostStatus.COMPLETED
+    return PostStatus.FAILED_GENERATION
+
+
+def refresh_post_status(post_id: str) -> str:
+    """
+    Roll this post's job_post_brands rows up into job_posts.status (and,
+    on first entering `generating`, stamp generate_started_at; on reaching a
+    terminal rollup state, stamp generate_completed_at -- both preserved so
+    the existing ETA averaging in lib/eta.ts keeps working unmodified).
+
+    Returns the computed status so callers (generate.py) can decide whether
+    to run terminal-state side effects, like dropping the transient
+    thumbnail once nothing is generating anymore.
+    """
+    brand_rows = db.list_post_brands(post_id)
+    status = compute_post_rollup_status(brand_rows)
+
+    fields: Dict[str, Any] = {"status": status}
+    post = db.get_post(post_id) or {}
+    if status == PostStatus.GENERATING and not post.get("generate_started_at"):
+        fields["generate_started_at"] = now_iso()
+    if status in (PostStatus.COMPLETED, PostStatus.FAILED_GENERATION):
+        fields["generate_completed_at"] = now_iso()
+
+    db.update_post(post_id, **fields)
+    return status
 
 
 def refresh_job_status(job_id: str) -> None:

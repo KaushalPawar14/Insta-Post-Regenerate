@@ -17,6 +17,36 @@ export type PostStatus =
   | "failed_generation"
   | "removed";
 
+// --- multi-brand generation ---------------------------------------------
+export type Brand = "facts4genius" | "factsbytes";
+export const ALL_BRANDS: Brand[] = ["facts4genius", "factsbytes"];
+export const BRAND_LABELS: Record<Brand, string> = {
+  facts4genius: "Facts4Genius",
+  factsbytes: "Facts Bytes",
+};
+
+/** Status values a single job_post_brands row can have -- a subset of PostStatus. */
+export type BrandGenerationStatus =
+  | "queued_for_generation"
+  | "generating"
+  | "completed"
+  | "failed_generation";
+
+export interface JobPostBrand {
+  id: string;
+  post_id: string;
+  job_id: string;
+  user_id: string;
+  brand: Brand;
+  status: BrandGenerationStatus;
+  final_image_path: string | null;
+  image_cost_usd: number;
+  error: string | null;
+  generate_started_at: string | null;
+  generate_completed_at: string | null;
+  created_at: string;
+}
+
 export interface Job {
   id: string;
   user_id: string;
@@ -155,6 +185,19 @@ export function isStaleGeneration(post: JobPost): boolean {
   return Date.now() - new Date(post.generate_started_at).getTime() > STALE_GENERATION_MS;
 }
 
+/**
+ * Same staleness check as `isStaleGeneration`, but scoped to ONE brand's own
+ * job_post_brands row -- the precise check now that generation happens per
+ * brand. `isStaleGeneration(post)` above still reflects the post-level
+ * rollup (its generate_started_at is the EARLIEST brand's start), which is
+ * too coarse to say "brand X specifically is stuck," so PostCard uses this
+ * one for each brand slot instead.
+ */
+export function isStaleBrandGeneration(brand: JobPostBrand): boolean {
+  if (brand.status !== "generating" || !brand.generate_started_at) return false;
+  return Date.now() - new Date(brand.generate_started_at).getTime() > STALE_GENERATION_MS;
+}
+
 // --- cost -------------------------------------------------------------------
 /**
  * Total cost of one post, in USD -- OpenAI (vision + image generation) only.
@@ -165,9 +208,19 @@ export function isStaleGeneration(post: JobPost): boolean {
  * applicable, not shown even as a labeled estimate. See README "Cost
  * tracking". The column itself is left in place, unused, as the lowest-risk
  * way to reverse this later.
+ *
+ * Image-generation cost now comes from the post's job_post_brands rows
+ * (pass whichever ones belong to this post) rather than a single
+ * `post.image_cost_usd` column -- a post generated for both brands costs
+ * more than one generated for a single brand, and this sums exactly the
+ * brand rows that actually exist for it. `post.image_cost_usd` itself is
+ * legacy (pre-multi-brand posts only; see migration_004's backfill) and is
+ * no longer read here since those posts now have an equivalent
+ * job_post_brands row instead.
  */
-export function postCostUsd(post: JobPost): number {
-  return (post.vision_cost_usd || 0) + (post.image_cost_usd || 0);
+export function postCostUsd(post: JobPost, brands: JobPostBrand[] = []): number {
+  const brandCost = brands.reduce((sum, b) => sum + (b.image_cost_usd || 0), 0);
+  return (post.vision_cost_usd || 0) + brandCost;
 }
 
 /**

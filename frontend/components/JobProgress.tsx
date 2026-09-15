@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { computeProgress, formatEta } from "@/lib/eta";
-import { formatInr, usdToInr, usdToInrRate, type Job, type JobPost, type PostStatus } from "@/lib/types";
+import {
+  formatInr,
+  usdToInr,
+  usdToInrRate,
+  type Job,
+  type JobPost,
+  type JobPostBrand,
+  type PostStatus,
+} from "@/lib/types";
 
 const STAGE_META: { key: PostStatus; label: string; color: string }[] = [
   { key: "pending", label: "Scraped", color: "var(--text-faint)" },
@@ -46,13 +54,15 @@ function StageChip({ label, color, count }: { label: string; color: string; coun
 export default function JobProgress({
   job,
   posts,
+  brands,
   live,
 }: {
   job: Job;
   posts: JobPost[];
+  brands: JobPostBrand[];
   live: boolean;
 }) {
-  const progress = computeProgress(posts, job.total_posts || posts.length || job.max_posts);
+  const progress = computeProgress(posts, brands, job.total_posts || posts.length || job.max_posts);
   const total = Math.max(progress.total, 1);
 
   const pct = (n: number) => `${(n / total) * 100}%`;

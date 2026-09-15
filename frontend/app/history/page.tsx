@@ -4,10 +4,15 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { authedFetch, supabaseBrowser } from "@/lib/supabase-browser";
 import { createShareLink } from "@/lib/share";
-import type { Job, JobPost } from "@/lib/types";
+import { BRAND_LABELS, type Brand, type Job, type JobPost } from "@/lib/types";
 
 interface JobSummary extends Job {
   counts: { total: number; awaiting: number; completed: number; failed: number };
+  /** Brand(s) with at least one completed job_post_brands row anywhere in
+   * this job -- a job-level aggregate, not per-post detail (that lives on
+   * the post cards once the job is opened). Empty until something has
+   * actually finished generating. */
+  completedBrands: Brand[];
 }
 
 const STATUS_TEXT: Record<Job["status"], string> = {
@@ -44,14 +49,20 @@ export default function HistoryPage() {
 
     const ids = (jobRows ?? []).map((j) => j.id);
     let postRows: Pick<JobPost, "job_id" | "status">[] = [];
+    let brandRows: { job_id: string; brand: Brand }[] = [];
     if (ids.length) {
-      const { data } = await sb.from("job_posts").select("job_id, status").in("job_id", ids);
-      postRows = (data ?? []) as Pick<JobPost, "job_id" | "status">[];
+      const [postsResult, brandsResult] = await Promise.all([
+        sb.from("job_posts").select("job_id, status").in("job_id", ids),
+        sb.from("job_post_brands").select("job_id, brand").in("job_id", ids).eq("status", "completed"),
+      ]);
+      postRows = (postsResult.data ?? []) as Pick<JobPost, "job_id" | "status">[];
+      brandRows = (brandsResult.data ?? []) as { job_id: string; brand: Brand }[];
     }
 
     setJobs(
       (jobRows ?? []).map((job) => {
         const mine = postRows.filter((p) => p.job_id === job.id);
+        const myBrands = new Set(brandRows.filter((b) => b.job_id === job.id).map((b) => b.brand));
         return {
           ...(job as Job),
           counts: {
@@ -60,6 +71,7 @@ export default function HistoryPage() {
             completed: mine.filter((p) => p.status === "completed").length,
             failed: mine.filter((p) => p.status.startsWith("failed")).length,
           },
+          completedBrands: Array.from(myBrands),
         };
       })
     );
@@ -139,6 +151,15 @@ export default function HistoryPage() {
                 <Link href={`/job/${job.id}`} className="job-url">
                   {job.input_url}
                 </Link>
+                {job.completedBrands.length > 0 && (
+                  <span className="brand-tags">
+                    {job.completedBrands.map((b) => (
+                      <span className="brand-tag" key={b}>
+                        {BRAND_LABELS[b]}
+                      </span>
+                    ))}
+                  </span>
+                )}
                 <div className="job-sub">
                   {new Date(job.created_at).toLocaleString()} ·{" "}
                   {job.input_type === "post" ? "single post" : `up to ${job.max_posts} posts`} ·{" "}

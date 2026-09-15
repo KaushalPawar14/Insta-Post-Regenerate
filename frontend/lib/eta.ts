@@ -1,4 +1,4 @@
-import { postCostUsd, type JobPost, type PostStatus } from "./types";
+import { postCostUsd, type JobPost, type JobPostBrand, type PostStatus } from "./types";
 
 /**
  * Free-tier QStash caps parallelism at 10, so a batch of posts moves through
@@ -49,7 +49,11 @@ export interface Progress {
   totalCostUsd: number;
 }
 
-export function computeProgress(posts: JobPost[], targetTotal?: number): Progress {
+export function computeProgress(
+  posts: JobPost[],
+  brands: JobPostBrand[] = [],
+  targetTotal?: number
+): Progress {
   const counts = {
     pending: 0,
     analyzing: 0,
@@ -65,7 +69,8 @@ export function computeProgress(posts: JobPost[], targetTotal?: number): Progres
   let totalCostUsd = 0;
   for (const post of posts) {
     counts[post.status] = (counts[post.status] ?? 0) + 1;
-    totalCostUsd += postCostUsd(post);
+    const postBrands = brands.filter((b) => b.post_id === post.id);
+    totalCostUsd += postCostUsd(post, postBrands);
   }
 
   const analyzeSamples = durations(posts, "analyze_started_at", "analyze_completed_at");

@@ -1,12 +1,19 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import BrandToggle from "@/components/BrandToggle";
+import type { Brand } from "@/lib/types";
+
+interface SharedBrandImage {
+  brand: Brand;
+  image_url: string | null;
+}
 
 interface SharedPost {
   id: string;
   post_id: string;
   caption: string;
-  image_url: string | null;
+  brands: SharedBrandImage[];
 }
 
 /**
@@ -15,7 +22,9 @@ interface SharedPost {
  * once from the unauthenticated /api/share/[token] route, which is the only
  * thing standing between a visitor and this data. There is nothing here to
  * confirm, remove, or delete; every action is read-only (view, download,
- * copy caption).
+ * copy caption). A post generated for both brands shows the same
+ * BrandToggle tab-switcher PostCard uses, per the requirement that both
+ * views reuse the same display component.
  */
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
@@ -90,23 +99,27 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedBrand, setSelectedBrand] = useState<Brand>(post.brands[0]?.brand ?? "facts4genius");
+
+  const current = post.brands.find((b) => b.brand === selectedBrand) ?? post.brands[0] ?? null;
 
   // Same fetch -> blob -> object URL -> anchor mechanism PostCard.tsx uses,
   // minus the authenticated `.../downloaded` call at the end -- that marks
   // the OWNER's post as downloaded (feeds their private "delete this job?"
   // nudge) and requires a bearer token neither present nor appropriate here.
+  // Downloads whichever brand is currently toggled.
   async function download() {
-    if (!post.image_url) return;
+    if (!current?.image_url) return;
     setBusy(true);
     setActionError(null);
     try {
-      const response = await fetch(post.image_url);
+      const response = await fetch(current.image_url);
       if (!response.ok) throw new Error("Could not fetch the image.");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `${post.post_id}_final.png`;
+      anchor.download = `${post.post_id}_${current.brand}_final.png`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -131,13 +144,21 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   return (
     <article className="post">
       <div className="post-media">
-        {post.image_url ? (
-          <img src={post.image_url} alt={`Generated post ${post.post_id}`} loading="lazy" />
+        {current?.image_url ? (
+          <img src={current.image_url} alt={`Generated post ${post.post_id}`} loading="lazy" />
         ) : (
           <div className="media-placeholder">No preview</div>
         )}
       </div>
       <div className="post-body">
+        {post.brands.length > 1 && (
+          <BrandToggle
+            brands={post.brands.map((b) => ({ brand: b.brand, status: "completed" as const }))}
+            selected={selectedBrand}
+            onSelect={setSelectedBrand}
+          />
+        )}
+
         {actionError && <div className="post-err">{actionError}</div>}
 
         {post.caption && (
@@ -148,7 +169,7 @@ function SharedPostCard({ post }: { post: SharedPost }) {
         )}
 
         <div className="post-actions">
-          <button className="btn-primary btn-sm" onClick={download} disabled={busy || !post.image_url}>
+          <button className="btn-primary btn-sm" onClick={download} disabled={busy || !current?.image_url}>
             {busy ? "Downloading..." : "Download"}
           </button>
           <button className="btn-secondary btn-sm" onClick={copyCaption} disabled={!post.caption}>

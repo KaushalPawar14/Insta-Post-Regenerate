@@ -758,6 +758,72 @@ button:not(:disabled):hover {
   opacity: 0.85;
 }
 
+/* ------------------------------------------------------------ brand toggle */
+.brand-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.brand-toggle-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 99px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.brand-toggle-tab:hover {
+  color: var(--text);
+}
+.brand-toggle-tab.active {
+  border-color: var(--accent);
+  background: rgba(240, 180, 41, 0.12);
+  color: var(--text);
+}
+.brand-toggle-tab.failed.active {
+  border-color: var(--err);
+}
+.brand-toggle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+.brand-toggle-dot.generating {
+  background: var(--info);
+  animation: pulse 2s infinite;
+}
+.brand-toggle-dot.failed {
+  background: var(--err);
+}
+
+/* ------------------------------------------------------- brand aggregate --
+   Small tags on a history row summarizing which brand(s) any of that job's
+   posts were generated for. */
+.brand-tags {
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.brand-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 99px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 /* =========================================================================
    MOBILE (≈360px–640px). Desktop styling above this block is untouched --
    every rule here either lives inside this query or a narrower one nested
@@ -842,6 +908,8 @@ button:not(:disabled):hover {
   .post-actions { gap: 6px; }
   .post-actions button { flex: 1 1 auto; min-width: 108px; }
   .media-note { font-size: 10.5px; padding: 5px 8px; bottom: 8px; left: 8px; right: 8px; }
+  .brand-toggle-tab { font-size: 11.5px; padding: 5px 10px; }
+  .brand-tag { font-size: 9.5px; padding: 1.5px 6px; }
 
   /* Stepper: same 5 steps, tighter footprint */
   .stepper-dot { width: 19px; height: 19px; font-size: 10px; }
