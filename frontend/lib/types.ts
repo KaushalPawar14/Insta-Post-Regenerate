@@ -100,7 +100,11 @@ export interface JobPost {
   apify_cost_usd: number;
 }
 
-export const MAX_POSTS_CEILING = 100;
+/** Must match MAX_POSTS_CEILING in backend/_lib/config.py and the
+ * jobs.max_posts CHECK constraint in supabase/schema.sql -- there is no
+ * shared config between the two services, so all three are kept in sync by
+ * hand. */
+export const MAX_POSTS_CEILING = 50;
 
 /** Statuses where the pipeline is doing work on its own. */
 export const IN_FLIGHT: PostStatus[] = [

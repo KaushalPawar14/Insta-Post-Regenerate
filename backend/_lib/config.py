@@ -84,8 +84,11 @@ def image_quality() -> str:
 
 # Hard server-side ceiling on posts per job. Enforced in BOTH the Next.js
 # route that creates jobs and here in the scraper, so a forged request that
-# bypasses the UI still cannot exceed it.
-MAX_POSTS_CEILING = 100
+# bypasses the UI still cannot exceed it. Must match MAX_POSTS_CEILING in
+# frontend/lib/types.ts and the jobs.max_posts CHECK constraint in
+# supabase/schema.sql -- there is no shared config between the two services,
+# so all three are kept in sync by hand.
+MAX_POSTS_CEILING = 50
 
 
 # --- Cost tracking -----------------------------------------------------------

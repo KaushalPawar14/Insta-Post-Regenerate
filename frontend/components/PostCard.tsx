@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { authedFetch } from "@/lib/supabase-browser";
-import { useSignedUrl } from "@/lib/use-job";
+import { useSignedUrl, useGatedImage } from "@/lib/use-job";
 import {
   ALL_BRANDS,
   BRAND_LABELS,
@@ -75,6 +75,16 @@ export default function PostCard({
   // knows what they are confirming.
   const finalUrl = useSignedUrl(currentBrand?.final_image_path);
   const thumbUrl = useSignedUrl(confirmed ? null : post.thumb_path);
+
+  // Gates the visible <img> behind the browser actually finishing the new
+  // brand's image, instead of letting the src swap show a stale frame while
+  // it downloads -- `gatedSrc` keeps the last-LOADED brand's image on screen
+  // (so switching the toggle never blanks the card) and `imageLoading` drives
+  // a spinner overlay for exactly the gap where the toggle's selection and
+  // the visible image would otherwise disagree.
+  const { src: gatedSrc, loading: imageLoading } = useGatedImage(
+    currentBrand?.status === "completed" ? finalUrl : null
+  );
 
   // Adopt server-side caption changes, but never clobber an unsaved edit.
   useEffect(() => {
@@ -188,8 +198,15 @@ export default function PostCard({
               {stale ? "Timed out" : working ? label : "No preview"}
             </div>
           )
-        ) : currentBrand?.status === "completed" && finalUrl ? (
-          <img src={finalUrl} alt={`Generated post ${post.post_id}`} loading="lazy" />
+        ) : currentBrand?.status === "completed" && gatedSrc ? (
+          <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
+            <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
+            {imageLoading && (
+              <div className="media-loading-overlay">
+                <div className="spinner" />
+              </div>
+            )}
+          </div>
         ) : currentBrand?.status === "completed" ? (
           <div className="media-placeholder">
             <div className="spinner" />

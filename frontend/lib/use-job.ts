@@ -159,10 +159,12 @@ export function useSignedUrl(path: string | null | undefined) {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!path) {
-      setUrl(null);
-      return;
-    }
+    // Reset on EVERY path change, not just when it becomes falsy -- switching
+    // from one non-null path straight to another (e.g. toggling brands) must
+    // not leave the previous path's signed URL sitting in state, mislabeled
+    // as belonging to the new path, while the new one is still being fetched.
+    setUrl(null);
+    if (!path) return;
     let cancelled = false;
     supabaseBrowser()
       .storage.from(BUCKET)
@@ -179,4 +181,53 @@ export function useSignedUrl(path: string | null | undefined) {
   }, [path]);
 
   return url;
+}
+
+/**
+ * Gates a URL behind the browser actually finishing loading it, so a caller
+ * can keep showing the previous image (optionally dimmed) with a spinner
+ * overlay instead of letting an <img src=...> swap show a stale frame while
+ * the new bytes are still downloading -- the default way browsers handle a
+ * src change on an already-rendered <img>.
+ *
+ * `src` is the last URL that finished loading (stays put, so the old image
+ * keeps rendering through the gap); `loading` is true whenever `url` names
+ * something newer that hasn't finished loading yet.
+ */
+export function useGatedImage(url: string | null | undefined) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!url) {
+      setSrc(null);
+      setLoading(false);
+      return;
+    }
+    if (url === src) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      setSrc(url);
+      setLoading(false);
+    };
+    img.onerror = () => {
+      if (cancelled) return;
+      setLoading(false);
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+    // keyed on `url` alone; `src` is read for its value at effect-run time to
+    // skip a redundant reload of an already-displayed image.
+  }, [url]);
+
+  return { src, loading };
 }

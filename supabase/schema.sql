@@ -21,11 +21,12 @@ create table if not exists public.jobs (
                         check (input_type in ('profile', 'post')),
   input_url           text not null,
 
-  -- Hard ceiling of 100, enforced at the database layer as a third line of
+  -- Hard ceiling of 50, enforced at the database layer as a third line of
   -- defence behind the Next.js route and the Python scraper. A forged request
-  -- cannot exceed it even if it bypasses the app entirely.
+  -- cannot exceed it even if it bypasses the app entirely. Must match
+  -- MAX_POSTS_CEILING in frontend/lib/types.ts and backend/_lib/config.py.
   max_posts           integer not null default 1
-                        check (max_posts between 1 and 100),
+                        check (max_posts between 1 and 50),
 
   status              text not null default 'pending'
                         check (status in ('pending','scraping','analyzing',

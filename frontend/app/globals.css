@@ -824,6 +824,29 @@ button:not(:disabled):hover {
   white-space: nowrap;
 }
 
+/* ------------------------------------------------------ gated brand image --
+   Wraps the completed-post <img> so switching the brand toggle never shows
+   the new tab selected while the old brand's image is still on screen with
+   no indication anything is loading: the previously-loaded image stays put
+   (dimmed while `.loading`) with a spinner overlaid until the newly
+   selected brand's image has actually finished loading in the browser. */
+.media-image-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.media-image-wrap.loading img {
+  opacity: 0.45;
+}
+.media-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.2);
+}
+
 /* =========================================================================
    MOBILE (≈360px–640px). Desktop styling above this block is untouched --
    every rule here either lives inside this query or a narrower one nested

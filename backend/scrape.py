@@ -6,7 +6,7 @@ same client, same `apify/instagram-scraper` actor, same extracted fields, same
 sort-by-likes. Two things differ, both forced by the new execution model:
 
 1. The actor run is STARTED here and polled by `scrape_poll.py`, rather than
-   blocking on `.call()`. A 100-post scrape can outlast Vercel's hard 300s
+   blocking on `.call()`. A 50-post scrape can outlast Vercel's hard 300s
    function ceiling; starting and polling removes that risk entirely.
 
 2. A single post URL skips scraping-by-profile: the same actor is given the
@@ -23,7 +23,7 @@ sort-by-likes. Two things differ, both forced by the new execution model:
    requested count; see its docstring. The user's requested count still
    caps what gets INSERTED as job_posts rows and sent to the (billable)
    Analyzer -- only the fetch pool size changed, not the output size or the
-   100-post hard ceiling on that output.
+   50-post hard ceiling on that output.
 
 IDEMPOTENCY: `client.actor(ACTOR_ID).start(...)` is a real, billable, non-
 idempotent call. This function claims the job's PENDING -> SCRAPING

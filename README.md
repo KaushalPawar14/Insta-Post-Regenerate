@@ -406,7 +406,7 @@ History row.
 | `data_vault/3_extracted_prompts/` | `job_posts` columns | Queryable, and drives the UI |
 | `data_vault/4_final_generated_posts/` | Storage, private bucket | Per-user signed URLs |
 | `data_vault/temp_reference.png` | in-memory `BytesIO` | No disk |
-| `.call()` blocking on Apify | `.start()` + polling | A 100-post scrape can outlast 300s |
+| `.call()` blocking on Apify | `.start()` + polling | A 50-post scrape can outlast 300s |
 | `images.edit(...)` | `+ quality=` | Hobby's hard 300s ceiling |
 | — | `input_type: "post"` | New single-post-URL mode |
 | — | `awaiting_confirmation` | New per-post confirmation gate |
@@ -436,7 +436,7 @@ over as-is.
 |---|---|---|
 | Vercel Hobby function duration | **300s hard** | Drives `IMAGE_QUALITY=medium` |
 | Vercel Hobby licence | Non-commercial | Fine for a free tool; relevant if this monetises |
-| QStash free tier | 1,000 msgs/day, 10 parallel | ~5 maxed-out 100-post jobs/day |
+| QStash free tier | 1,000 msgs/day, 10 parallel | ~6 maxed-out 50-post jobs/day (both formats) |
 | Supabase free storage | 1 GB | ~350–600 generated images |
 | Supabase free DB / egress | 500 MB / 5 GB | Not a near-term concern |
 | Supabase free projects | **Pause after 7 days idle** | An unused deployment goes cold |

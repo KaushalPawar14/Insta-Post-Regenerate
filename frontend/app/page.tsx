@@ -21,7 +21,7 @@ export default function NewJobPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Classified in the browser purely for live feedback. The server re-parses
-  // and re-validates everything, including the 100-post ceiling.
+  // and re-validates everything, including the MAX_POSTS_CEILING ceiling.
   const parsed = useMemo(() => (url.trim() ? parseInstagramInput(url) : null), [url]);
   const isSinglePost = parsed?.ok === true && parsed.inputType === "post";
 

@@ -88,8 +88,9 @@ genuinely came from QStash — without them, anyone could hit `/api/generate` an
 spend your OpenAI credit.
 
 **Free tier limits that matter here:** 1,000 messages/day, max 10 concurrent
-deliveries. A 100-post job uses ~100 analyze + up to 100 generate messages plus
-a handful of scrape polls, so roughly **5 maxed-out jobs per day**.
+deliveries. A 50-post job uses ~50 analyze + up to 100 generate messages (both
+formats confirmed for every post) plus a handful of scrape polls, so roughly
+**6 maxed-out jobs per day**.
 
 ---
 

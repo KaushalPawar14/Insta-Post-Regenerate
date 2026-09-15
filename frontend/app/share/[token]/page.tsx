@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import BrandToggle from "@/components/BrandToggle";
+import { useGatedImage } from "@/lib/use-job";
 import type { Brand } from "@/lib/types";
 
 interface SharedBrandImage {
@@ -103,6 +104,12 @@ function SharedPostCard({ post }: { post: SharedPost }) {
 
   const current = post.brands.find((b) => b.brand === selectedBrand) ?? post.brands[0] ?? null;
 
+  // Same load-gating PostCard.tsx uses: keep the last-loaded brand's image on
+  // screen (dimmed) with a spinner overlay until the newly toggled brand's
+  // image has actually finished loading, rather than letting the <img> src
+  // swap show a stale frame while it downloads.
+  const { src: gatedSrc, loading: imageLoading } = useGatedImage(current?.image_url ?? null);
+
   // Same fetch -> blob -> object URL -> anchor mechanism PostCard.tsx uses,
   // minus the authenticated `.../downloaded` call at the end -- that marks
   // the OWNER's post as downloaded (feeds their private "delete this job?"
@@ -144,8 +151,20 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   return (
     <article className="post">
       <div className="post-media">
-        {current?.image_url ? (
-          <img src={current.image_url} alt={`Generated post ${post.post_id}`} loading="lazy" />
+        {gatedSrc ? (
+          <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
+            <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
+            {imageLoading && (
+              <div className="media-loading-overlay">
+                <div className="spinner" />
+              </div>
+            )}
+          </div>
+        ) : current?.image_url ? (
+          <div className="media-placeholder">
+            <div className="spinner" />
+            Loading image...
+          </div>
         ) : (
           <div className="media-placeholder">No preview</div>
         )}

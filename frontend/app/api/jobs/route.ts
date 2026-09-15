@@ -10,7 +10,7 @@ export const maxDuration = 30;
 /**
  * Create a job and kick off the pipeline.
  *
- * The 100-post ceiling is enforced HERE, server-side, and rejected outright
+ * The MAX_POSTS_CEILING ceiling is enforced HERE, server-side, and rejected outright
  * rather than silently clamped -- a client sending 5000 gets a 400, not a
  * quietly-trimmed job. (It is also re-checked in the Python scraper and
  * constrained by a CHECK constraint on the table.)
