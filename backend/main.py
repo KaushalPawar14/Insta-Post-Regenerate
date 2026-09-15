@@ -34,6 +34,7 @@ from _lib.handler import TerminalError  # noqa: E402
 
 import analyze  # noqa: E402
 import generate  # noqa: E402
+import prepare_slides  # noqa: E402
 import scrape  # noqa: E402
 import scrape_poll  # noqa: E402
 
@@ -42,6 +43,7 @@ app = FastAPI()
 STAGES: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "scrape": scrape.run,
     "scrape_poll": scrape_poll.run,
+    "prepare_slides": prepare_slides.run,
     "analyze": analyze.run,
     "generate": generate.run,
 }
@@ -94,6 +96,11 @@ async def post_scrape(request: Request) -> JSONResponse:
 @app.post("/api/scrape_poll")
 async def post_scrape_poll(request: Request) -> JSONResponse:
     return await _dispatch("scrape_poll", request)
+
+
+@app.post("/api/prepare_slides")
+async def post_prepare_slides(request: Request) -> JSONResponse:
+    return await _dispatch("prepare_slides", request)
 
 
 @app.post("/api/analyze")

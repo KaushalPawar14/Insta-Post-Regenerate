@@ -1,22 +1,38 @@
 """
-Agent 2: vision analysis.
+Agent 2: vision analysis -- runs ONCE PER CHECKED SLIDE, not once per post.
 
-Ported from `nodes/agent_2_analyzer.py`. The LLM call is unchanged -- same
-model (`gpt-5` via `langchain_openai`), same temperature, same structured
-output schema, same multimodal message shape, and the same system prompt
-loaded verbatim from `_lib/prompts.py`.
+Ported from `nodes/agent_2_analyzer.py`. The LLM call itself is unchanged --
+same model (`gpt-5` via `langchain_openai`), same temperature, same
+structured output schema, same multimodal message shape, and the same
+system prompt loaded verbatim from `_lib/prompts.py`.
 
-What changed, and only what the new execution model forced:
-  - one post per invocation instead of a `for` loop over the whole state
-  - the downloaded image is processed in memory instead of being written to
-    `data_vault/2_original_images/`, then uploaded to Supabase Storage as a
-    TRANSIENT thumbnail (deleted once the post reaches `completed`)
-  - results go to `job_posts` columns instead of
-    `data_vault/3_extracted_prompts/<id>.json`
+What changed for carousel support: this function now operates on ONE
+`post_slides` row (payload: `slide_row_id`) instead of one `job_posts` row.
+A plain image post has exactly one slide and behaves identically to before
+this feature existed -- it just reaches this function via that slide's row
+instead of the post's row directly. A carousel's checked slides each get
+their own independent invocation, exactly the same fan-out pattern already
+used for per-brand generation.
+
+Image source depends on whether prepare_slides.py already ran for this
+slide:
+  - Multi-slide posts: prepare_slides.py already downloaded this slide's
+    image into OUR bucket (`post_slides.thumb_path`) before the user ever
+    saw stage 2. Reused here via db.download() instead of re-fetching from
+    Instagram a second time (which may have expired by now anyway).
+  - Plain image posts: unchanged from before this feature -- fetched live
+    from `raw_image_url`, resized, and uploaded here for the first time.
+
+job_posts.status is a ROLLUP over this post's post_slides rows (see
+`refresh_post_analysis_status` in _lib/pipeline.py) for the SAME reason
+job_posts.status is a rollup over job_post_brands during generation -- it
+keeps its exact existing enum and meaning, so nothing downstream needed to
+change to accommodate a post having more than one slide.
 
 *** This stage deliberately ends by parking the post in
-`awaiting_confirmation` and publishing NOTHING. The Analyzer -> Generator edge
-does not exist. Only an explicit user Confirm can start a paid generation. ***
+`awaiting_confirmation` (once every checked slide is done) and publishing
+NOTHING. The Analyzer -> Generator edge does not exist. Only an explicit
+user Confirm can start a paid generation. ***
 """
 
 import os
@@ -35,67 +51,95 @@ from PIL import Image  # noqa: E402
 
 from _lib import db, pricing  # noqa: E402
 from _lib.handler import TerminalError
-from _lib.pipeline import claim_analysis, now_iso, refresh_job_status  # noqa: E402
+from _lib.pipeline import (  # noqa: E402
+    claim_slide_analysis,
+    now_iso,
+    refresh_job_status,
+    refresh_post_analysis_status,
+)
 from _lib.prompts import VISION_PROMPT  # noqa: E402
-from _lib.schemas import AnalyzerOutput, PostData, PostStatus  # noqa: E402
+from _lib.schemas import AnalyzerOutput, SlideData, SlideStatus  # noqa: E402
 
 DOWNLOAD_TIMEOUT = 30
 
 
-def run(payload: Dict[str, Any]) -> Dict[str, Any]:
-    row_id = payload.get("post_row_id")
-    if not row_id:
-        raise TerminalError("Missing post_row_id in payload.")
+def _fail(slide_id: str, post_id: str, job_id: str, message: str) -> None:
+    db.fail_slide(slide_id, message)
+    refresh_post_analysis_status(post_id)
+    refresh_job_status(job_id)
 
-    row = claim_analysis(row_id)
+
+def run(payload: Dict[str, Any]) -> Dict[str, Any]:
+    slide_id = payload.get("slide_row_id")
+    if not slide_id:
+        raise TerminalError("Missing slide_row_id in payload.")
+
+    row = claim_slide_analysis(slide_id)
     if row is None:
-        # Already analysed, already in flight, or deleted. Not an error.
+        # Already analysed, already in flight, unchecked (skipped), or
+        # deleted. Not an error.
         return {"skipped": True}
 
-    post = PostData.from_row(row)
-    print(f"  -> Processing post (ID: {post.post_id})")
+    slide = SlideData.from_row(row)
+    post_row = db.get_post(slide.post_id) if slide.post_id else None
+    if not post_row:
+        _fail(slide_id, slide.post_id or "", slide.job_id or "", f"Parent post {slide.post_id} was not found.")
+        raise TerminalError(f"Post {slide.post_id} not found.")
 
-    # --- STEP 1: Download & Convert Image (in memory, then Storage) --------
-    if not post.raw_image_url:
-        print(f"     No image URL found for {post.post_id}")
-        db.fail_post(row_id, PostStatus.FAILED_ANALYSIS, "No image URL on the scraped post.")
-        refresh_job_status(post.job_id)
-        raise TerminalError("No image URL.")
+    # Promote the post to ANALYZING promptly -- mirrors the pre-carousel
+    # behavior where claiming the post's own row for analysis set
+    # job_posts.status directly, in the same atomic step.
+    refresh_post_analysis_status(slide.post_id)
 
-    try:
-        response = requests.get(post.raw_image_url, timeout=DOWNLOAD_TIMEOUT)
-    except requests.RequestException as exc:
-        db.fail_post(row_id, PostStatus.FAILED_ANALYSIS, f"Image download failed: {exc}")
-        refresh_job_status(post.job_id)
-        raise TerminalError(f"Image download failed: {exc}") from exc
+    original_caption = post_row.get("original_caption") or ""
+    print(f"  -> Processing slide {slide.slide_index} of post (ID: {post_row.get('post_id')})")
 
-    if response.status_code != 200:
-        print(f"     Failed to download image for {post.post_id}")
-        db.fail_post(
-            row_id,
-            PostStatus.FAILED_ANALYSIS,
-            f"Image download returned HTTP {response.status_code}. Instagram CDN "
-            "URLs expire quickly -- re-running the job usually fixes this.",
-        )
-        refresh_job_status(post.job_id)
-        raise TerminalError(f"Image download HTTP {response.status_code}.")
+    # --- STEP 1: Get this slide's image bytes -------------------------------
+    if slide.thumb_path:
+        # Multi-slide post: prepare_slides.py already fetched and resized
+        # this slide's image into our own Storage. Reuse those exact bytes
+        # rather than hitting Instagram's CDN a second time.
+        try:
+            jpeg_bytes = db.download(slide.thumb_path)
+        except Exception as exc:  # noqa: BLE001
+            _fail(slide_id, slide.post_id, slide.job_id, f"Could not read this slide's stored image: {exc}")
+            raise TerminalError(f"Could not read stored image: {exc}") from exc
+        thumb_path = slide.thumb_path
+    else:
+        # Plain image post: unchanged from before this feature -- fetch the
+        # raw CDN url live, resize, and upload here for the first time.
+        if not slide.raw_image_url:
+            _fail(slide_id, slide.post_id, slide.job_id, "No image URL on the scraped post.")
+            raise TerminalError("No image URL.")
 
-    # Identical processing to the original, just without touching disk.
-    img = Image.open(BytesIO(response.content))
+        try:
+            response = requests.get(slide.raw_image_url, timeout=DOWNLOAD_TIMEOUT)
+        except requests.RequestException as exc:
+            _fail(slide_id, slide.post_id, slide.job_id, f"Image download failed: {exc}")
+            raise TerminalError(f"Image download failed: {exc}") from exc
 
-    # Convert to RGB (removes alpha channel if PNG/WEBP, fixes HEIC issues conceptually)
-    rgb_im = img.convert("RGB")
+        if response.status_code != 200:
+            print(f"     Failed to download image for slide {slide.slide_index}")
+            _fail(
+                slide_id,
+                slide.post_id,
+                slide.job_id,
+                f"Image download returned HTTP {response.status_code}. Instagram CDN "
+                "URLs expire quickly -- re-running the job usually fixes this.",
+            )
+            raise TerminalError(f"Image download HTTP {response.status_code}.")
 
-    # Resize to 768px to save API costs while keeping bold text readable
-    rgb_im.thumbnail((768, 768))
+        img = Image.open(BytesIO(response.content))
+        rgb_im = img.convert("RGB")
+        rgb_im.thumbnail((768, 768))
 
-    buffer = BytesIO()
-    rgb_im.save(buffer, "JPEG", quality=90)
-    jpeg_bytes = buffer.getvalue()
+        buffer = BytesIO()
+        rgb_im.save(buffer, "JPEG", quality=90)
+        jpeg_bytes = buffer.getvalue()
 
-    thumb_path = db.storage_path(post.user_id, post.job_id, f"thumb_{post.post_id}.jpg")
-    db.upload(thumb_path, jpeg_bytes, "image/jpeg")
-    post.local_processed_image_path = thumb_path
+        thumb_path = db.storage_path(slide.user_id, slide.job_id, f"thumb_{post_row.get('post_id')}.jpg")
+        db.upload(thumb_path, jpeg_bytes, "image/jpeg")
+    slide.thumb_path = thumb_path
 
     # --- STEP 2: Vision LLM Analysis --------------------------------------
     print("     Analyzing image and rewriting caption...")
@@ -107,10 +151,9 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     # only the parsed Pydantic object with no usage information at all.
     structured_llm = llm.with_structured_output(AnalyzerOutput, include_raw=True)
 
-    # Build the multimodal message
     message = HumanMessage(
         content=[
-            {"type": "text", "text": f"Original Caption: {post.original_caption}\n\nAnalyze this image and caption."},
+            {"type": "text", "text": f"Original Caption: {original_caption}\n\nAnalyze this image and caption."},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
         ]
     )
@@ -118,27 +161,25 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         response = structured_llm.invoke([SystemMessage(content=VISION_PROMPT), message])
     except Exception as exc:  # noqa: BLE001
-        print(f"     LLM Analysis failed for {post.post_id}: {exc}")
-        db.update_post(row_id, thumb_path=thumb_path)
-        db.fail_post(row_id, PostStatus.FAILED_ANALYSIS, f"Vision analysis failed: {exc}")
-        refresh_job_status(post.job_id)
+        print(f"     LLM Analysis failed for slide {slide.slide_index}: {exc}")
+        db.update_slide(slide_id, thumb_path=thumb_path)
+        _fail(slide_id, slide.post_id, slide.job_id, f"Vision analysis failed: {exc}")
         raise TerminalError(f"Vision analysis failed: {exc}") from exc
 
     # With include_raw=True, a parsing failure is returned here rather than
     # raised -- same failure, different shape, so it needs its own check to
-    # preserve the original behavior of failing the post either way.
+    # preserve the original behavior of failing the slide either way.
     result = response.get("parsed")
     if result is None:
         parsing_error = response.get("parsing_error")
-        print(f"     LLM Analysis failed for {post.post_id}: {parsing_error}")
-        db.update_post(row_id, thumb_path=thumb_path)
-        db.fail_post(row_id, PostStatus.FAILED_ANALYSIS, f"Vision analysis failed: {parsing_error}")
-        refresh_job_status(post.job_id)
+        print(f"     LLM Analysis failed for slide {slide.slide_index}: {parsing_error}")
+        db.update_slide(slide_id, thumb_path=thumb_path)
+        _fail(slide_id, slide.post_id, slide.job_id, f"Vision analysis failed: {parsing_error}")
         raise TerminalError(f"Vision analysis failed: {parsing_error}")
 
-    post.image_generation_prompt = result.image_generation_prompt
-    post.extracted_text = result.extracted_text
-    post.refined_caption = result.refined_caption
+    slide.image_generation_prompt = result.image_generation_prompt
+    slide.extracted_text = result.extracted_text
+    slide.refined_caption = result.refined_caption
     print("     Success: Generated prompts and new caption.")
 
     # `usage_metadata` is a dict at runtime (confirmed against the installed
@@ -148,18 +189,19 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     usage_metadata = getattr(raw_message, "usage_metadata", None) if raw_message else None
     vision_cost = pricing.vision_cost_usd(usage_metadata)
 
-    # --- STEP 3: Persist, then STOP for user confirmation ------------------
-    db.update_post(
-        row_id,
-        **post.analyzer_updates(),
-        status=PostStatus.AWAITING_CONFIRMATION,
+    # --- STEP 3: Persist this slide, then roll the post up ------------------
+    db.update_slide(
+        slide_id,
+        **slide.analyzer_updates(),
+        status=SlideStatus.ANALYZED,
         analyze_completed_at=now_iso(),
         vision_cost_usd=vision_cost,
         error=None,
     )
-    refresh_job_status(post.job_id)
+    # No queue.publish() here, by design -- refresh_post_analysis_status only
+    # ever moves the post to awaiting_confirmation once EVERY checked slide
+    # has reached a terminal state, and does so without publishing anything.
+    refresh_post_analysis_status(slide.post_id)
+    refresh_job_status(slide.job_id)
 
-    # No queue.publish() here, by design.
-    return {"post_id": post.post_id, "status": PostStatus.AWAITING_CONFIRMATION}
-
-
+    return {"slide_id": slide_id, "post_id": slide.post_id, "status": SlideStatus.ANALYZED}

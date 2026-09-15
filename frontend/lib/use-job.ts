@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabaseBrowser } from "./supabase-browser";
-import type { Job, JobPost, JobPostBrand } from "./types";
+import type { Job, JobPost, JobPostBrand, Slide } from "./types";
 
 export const BUCKET = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || "generated";
 
@@ -22,6 +22,7 @@ export function useJob(jobId: string) {
   const [job, setJob] = useState<Job | null>(null);
   const [posts, setPosts] = useState<JobPost[]>([]);
   const [brands, setBrands] = useState<JobPostBrand[]>([]);
+  const [slides, setSlides] = useState<Slide[]>([]);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,10 +31,11 @@ export function useJob(jobId: string) {
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
-    const [jobResult, postsResult, brandsResult] = await Promise.all([
+    const [jobResult, postsResult, brandsResult, slidesResult] = await Promise.all([
       sb.from("jobs").select("*").eq("id", jobId).maybeSingle(),
       sb.from("job_posts").select("*").eq("job_id", jobId).order("rank", { ascending: true }),
       sb.from("job_post_brands").select("*").eq("job_id", jobId),
+      sb.from("post_slides").select("*").eq("job_id", jobId).order("slide_index", { ascending: true }),
     ]);
 
     if (jobResult.error) {
@@ -51,6 +53,9 @@ export function useJob(jobId: string) {
     }
     if (!brandsResult.error && brandsResult.data) {
       setBrands(brandsResult.data as JobPostBrand[]);
+    }
+    if (!slidesResult.error && slidesResult.data) {
+      setSlides(slidesResult.data as Slide[]);
     }
     setLoading(false);
   }, [jobId]);
@@ -95,6 +100,24 @@ export function useJob(jobId: string) {
             const next = index === -1 ? [...current, incoming] : current.slice();
             if (index !== -1) next[index] = incoming;
             return next;
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "post_slides", filter: `job_id=eq.${jobId}` },
+        (payload) => {
+          setSlides((current) => {
+            if (payload.eventType === "DELETE") {
+              const goneId = (payload.old as { id?: string })?.id;
+              return current.filter((s) => s.id !== goneId);
+            }
+            const incoming = payload.new as Slide;
+            if (!incoming?.id) return current;
+            const index = current.findIndex((s) => s.id === incoming.id);
+            const next = index === -1 ? [...current, incoming] : current.slice();
+            if (index !== -1) next[index] = incoming;
+            return next.sort((a, b) => a.slide_index - b.slide_index);
           });
         }
       )
@@ -145,13 +168,21 @@ export function useJob(jobId: string) {
     return () => clearTimeout(timer);
   }, [load]);
 
-  /** This post's brand rows (0, 1, or 2), for PostCard's toggle/generate-other-brand logic. */
+  /** This post's brand rows (across ALL of its slides), for PostCard's
+   * toggle/generate-other-brand logic and postCostUsd()'s summation. */
   const brandsForPost = useCallback(
     (postId: string) => brands.filter((b) => b.post_id === postId),
     [brands]
   );
 
-  return { job, posts, brands, brandsForPost, loading, live, error, reload: load };
+  /** This post's slides, in order -- 1 for a plain image post, one per
+   * carousel entry otherwise. */
+  const slidesForPost = useCallback(
+    (postId: string) => slides.filter((s) => s.post_id === postId),
+    [slides]
+  );
+
+  return { job, posts, brands, slides, brandsForPost, slidesForPost, loading, live, error, reload: load };
 }
 
 /** Private-bucket objects are only reachable through a short-lived signed URL. */

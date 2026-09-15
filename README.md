@@ -25,7 +25,9 @@ The first two were **extracted programmatically** from the original pipeline by
 [`scripts/extract_prompts.py`](scripts/extract_prompts.py) rather than retyped,
 so fidelity is guaranteed rather than assumed.
 
-`VISION_PROMPT` is **byte-for-byte identical** to the original.
+`VISION_PROMPT` is **byte-for-byte identical** to the original. It now runs
+once per CHECKED slide instead of once per post (see "Carousel / multi-slide
+posts") — a plain image post still runs it exactly once, same as always.
 
 `GENERATOR_PROMPT` differs from the original by **exactly two lines** — the one
 authorised edit, appended to the *Image-to-Text Transition* section:
@@ -341,13 +343,18 @@ without duplicating any of the scrape/vision work.
 approach would add `facts4genius_status`, `facts4genius_image_path`,
 `factsbytes_status`, `factsbytes_image_path`, ... directly onto `job_posts`.
 That was rejected because a post's number of generations is no longer fixed
-at one — it's 0, 1, or 2, and the moment a third format ever exists, every
-column doubles again. `job_post_brands` (`supabase/migration_004_multi_brand.sql`)
-instead has one row per `(post_id, brand)` — `unique(post_id, brand)` — each
-with its own `status`, `final_image_path`, `image_cost_usd`, and error fields.
-This is the same "outgrows fixed columns" reasoning already applied once in
-this codebase when per-post generation state was pulled out of a single wide
-row, kept consistent rather than special-cased for brands.
+at one — it's 0, 1, or 2 per slide, and the moment a third format ever
+exists, every column doubles again. `job_post_brands`
+(`supabase/migration_004_multi_brand.sql`) instead has one row per
+`(slide_id, brand)` — each with its own `status`, `final_image_path`,
+`image_cost_usd`, and error fields. This is the same "outgrows fixed
+columns" reasoning already applied once in this codebase when per-post
+generation state was pulled out of a single wide row, kept consistent
+rather than special-cased for brands — and, later, re-keyed from `post_id`
+to `slide_id` for the same reason again when carousels arrived (see
+"Carousel / multi-slide posts" below); `post_id` stays denormalized
+alongside `slide_id` on every row specifically so this section's own rollup
+design keeps working unmodified either way.
 
 **`job_posts.status` becomes a rollup, not a directly-written value.** The
 Generator used to `UPDATE job_posts SET status = ...` on its own row.  Now it
@@ -379,12 +386,13 @@ between the results view (`PostCard.tsx`), the public share page
 component, not three reimplementations. Download always targets whichever
 brand is currently selected in the toggle.
 
-**Generating the missing format later.** A post confirmed for only one format
-shows an **"Also generate for Facts Bytes"** (or Facts4Genius) button, backed
-by `POST /api/posts/[id]/generate-brand`. It reuses the post's existing
-Analyzer output — it never re-scrapes or re-runs the vision call — so the
-only new cost is that one additional `images.edit` call. The same route
-powers **Retry** for a single failed format, atomically claiming
+**Generating the missing format later.** A slide confirmed for only one
+format shows an **"Also generate for Facts Bytes"** (or Facts4Genius) button,
+backed by `POST /api/slides/[id]/generate-brand`. It reuses that slide's
+existing Analyzer output — it never re-scrapes or re-runs the vision call —
+so the only new cost is that one additional `images.edit` call, and it
+never touches any other slide of the same post. The same route powers
+**Retry** for a single failed format, atomically claiming
 `failed_generation → queued_for_generation` on that one `job_post_brands` row
 so a retry can never duplicate a completed sibling format.
 
@@ -393,6 +401,127 @@ least one `completed` `job_post_brands` row anywhere in that job (across all
 its posts) — a job-level summary only. Which specific post has which format
 is still shown on that post's own card once the job is opened, not on the
 History row.
+
+---
+
+## Carousel / multi-slide posts
+
+Instagram carousels ("Sidecar" posts, `type: "Sidecar"` in the Apify item)
+have several images, not one. Every post — a plain image or a carousel —
+now has one or more **slides**, and each slide gets its own Analyzer output,
+its own per-brand generations, and its own display.
+
+**Detecting a carousel.** Confirmed against two real sample Apify actor
+outputs before writing any code: a plain image post has `type: "Image"` and
+an empty `images` array (its one image lives in `displayUrl`); a Sidecar has
+`type: "Sidecar"` and its `images` array holds the ordered slide URLs,
+matching `childPosts[i].displayUrl` 1:1 by index. This holds for both
+profile-scraped and single-post-URL jobs, because `scrape.py` already sends
+the SAME actor the SAME `directUrls` + `resultsType: "posts"` shape for
+both modes (differing only in `resultsLimit`) — a post's own item shape is a
+function of the post's type, not of which mode fetched it.
+
+**Schema: a new `post_slides` table, and `job_post_brands` re-keyed to it.**
+`post_slides` has one row per slide (`unique(post_id, slide_index)`),
+carrying everything that used to live directly on `job_posts` but can no
+longer be a single value once a post can have several images: the durable
+thumbnail, the stage-2 checkbox (`include_in_analysis`), and each slide's own
+Agent 2 output (`image_generation_prompt`, `extracted_text`, a
+`refined_caption` candidate, `vision_cost_usd`). `job_post_brands` gains
+`slide_id` (`unique(slide_id, brand)` replaces `unique(post_id, brand)`) but
+**keeps `post_id` denormalized** — every existing post-level rollup query
+(`refresh_post_status`, the History brand-tag aggregation) still just asks
+"give me all this post's brand rows" and gets the right answer whether the
+post has one slide or several, with zero changes to that code.
+`job_posts.image_generation_prompt`/`extracted_text` are **dropped**, not
+just deprecated, once backfilled onto each post's one slide — a single-value
+column literally cannot represent a multi-slide post, so leaving it around
+would be actively misleading rather than a safety net. See
+`supabase/migration_006_carousel_slides.sql` for the exact backfill.
+
+**Durable slide images, downloaded before the user ever sees them.** Stage 2
+(below) introduces a genuinely new, human-gated pause between scraping and
+analysis. Instagram's CDN URLs already "expire quickly" (see Known
+constraints) — tolerable today because analysis fires immediately after
+scraping with no wait, but a carousel can now sit waiting on a reviewer
+indefinitely. Two things need a copy that outlives that wait: stage 2's own
+preview, and any slide the reviewer leaves unchecked, whose "final"
+appearance in the result is its *original* image, shown for as long as the
+job exists (this app has no TTL at all). So a new stage, **`prepare_slides.py`**,
+runs once per carousel right after scraping and downloads every slide into
+our own Storage bucket before stage 2 is ever shown — reusing the exact
+download → RGB → resize → upload logic `analyze.py` already had for the
+single-image thumbnail, just moved one stage earlier and run per slide. A
+plain image post skips this entirely; its one slide is still fetched live at
+analysis time, exactly as before this feature existed.
+
+**Pipeline, in order:**
+
+```
+scrape_poll.py
+  │
+  ├─ plain image post ──────────────────► analyze (unchanged, immediate)
+  │
+  └─ carousel ──► prepare_slides (download every slide into Storage)
+                          │
+                          ▼
+             job_posts.status = awaiting_slide_selection
+                          │
+        user reviews slides (raw images, checkboxes default CHECKED),
+        toggles are saved immediately (PATCH /api/slides/[id]) --
+        no cost incurred yet beyond the already-sunk scrape
+                          │
+        "Continue to analysis" -- ONE batch action across every carousel
+        in the job (mirrors Confirm & Generate's own job-level batching,
+        not a per-post button), per-post fine-tuning already done above
+                          │
+                          ▼
+     fan out `analyze` ONLY for checked slides; unchecked slides are
+     stamped `skipped` and never touched again
+                          │
+                          ▼
+        awaiting_confirmation (existing stage, unchanged: caption +
+        brand checkboxes + Confirm & Generate)
+                          │
+        Confirm & Generate: one job_post_brands row per
+        (checked slide × selected brand)
+```
+
+**Two rollups instead of one.** `job_posts.status` was already a rollup over
+`job_post_brands` for the generation phase (see Multi-brand generation
+above); it's now ALSO a rollup over `post_slides` for the analysis phase,
+via a second pure function, `compute_post_analysis_rollup_status()`, with
+the identical shape (any relevant slide analyzing/pending → `analyzing`; all
+terminal with ≥1 analyzed → `awaiting_confirmation`; all terminal with none
+analyzed → `failed_analysis`) just at a different stage. A plain image
+post's one slide collapses this rollup to exactly its pre-carousel
+transitions, so nothing about its behavior changes. `jobs.status` itself
+gained **no new value** — a carousel's `awaiting_slide_selection` folds into
+the same job-level "needs your attention" bucket `awaiting_confirmation`
+already meant, the same way that bucket already covers many different
+per-post states without the job-level enum needing to enumerate all of them.
+
+**Caption: promoted from the first checked slide, once, race-safely.** Every
+checked slide's own vision call independently produces a candidate
+`refined_caption` (stored on its own slide row), but the post still shows
+exactly one, editable caption, as before. It's promoted from whichever
+checked slide has the lowest `slide_index`, computed **only** inside the
+same rollup call that finds every checked slide already terminal — there is
+exactly one such call (made by whichever slide happens to finish last), and
+by then `include_in_analysis` is immutable (enforced in
+`PATCH /api/slides/[id]`, rejected once the post leaves
+`awaiting_slide_selection`), so the "first checked slide" the promotion
+computes can never change out from under it.
+
+**Display.** `components/SlideNav.tsx` is the arrow-navigation counterpart to
+`BrandToggle` — same self-hides-below-2 convention, same
+results-page/History/share-page reuse. A slide shows its generated image (with
+`BrandToggle` nested inside, if more than one format was generated for it),
+or — for a slide skipped in stage 2, or whose own analysis failed — its
+durable original, permanently. Download targets whichever slide+brand is
+currently in view. Cost tracking sums real per-slide vision cost (checked
+slides only) and real per-slide-per-brand generation cost, the same
+summation pattern `job_post_brands` already established, one level deeper.
 
 ---
 
@@ -414,6 +543,8 @@ History row.
 | — | `removed` status | Terminal off-ramp for a post excluded before confirmation |
 | — | real per-post/per-job cost in ₹ INR (OpenAI only) | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; Apify excluded entirely (free credits) |
 | single branded template | `job_post_brands` table, Facts4Genius + Facts Bytes | A post can be generated in either or both formats, reusing one Analyzer output |
+| one image per post | `post_slides` table, carousel-aware | A post can have several slides, each independently reviewed, analyzed, and generated |
+| — | `awaiting_slide_selection` status + stage-2 review | New pre-analysis gate for carousels only -- raw slides, checkbox per slide, zero AI cost until Continue |
 
 **Dependencies dropped:**
 

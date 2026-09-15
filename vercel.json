@@ -19,6 +19,7 @@
   "rewrites": [
     { "source": "/api/scrape", "destination": { "service": "backend" } },
     { "source": "/api/scrape_poll", "destination": { "service": "backend" } },
+    { "source": "/api/prepare_slides", "destination": { "service": "backend" } },
     { "source": "/api/analyze", "destination": { "service": "backend" } },
     { "source": "/api/generate", "destination": { "service": "backend" } },
     { "source": "/(.*)", "destination": { "service": "frontend" } }

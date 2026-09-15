@@ -1,7 +1,8 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import BrandToggle from "@/components/BrandToggle";
+import SlideNav from "@/components/SlideNav";
 import { useGatedImage } from "@/lib/use-job";
 import type { Brand } from "@/lib/types";
 
@@ -10,11 +11,17 @@ interface SharedBrandImage {
   image_url: string | null;
 }
 
+interface SharedSlide {
+  slide_index: number;
+  brands: SharedBrandImage[];
+  original_image_url: string | null;
+}
+
 interface SharedPost {
   id: string;
   post_id: string;
   caption: string;
-  brands: SharedBrandImage[];
+  slides: SharedSlide[];
 }
 
 /**
@@ -23,9 +30,9 @@ interface SharedPost {
  * once from the unauthenticated /api/share/[token] route, which is the only
  * thing standing between a visitor and this data. There is nothing here to
  * confirm, remove, or delete; every action is read-only (view, download,
- * copy caption). A post generated for both brands shows the same
- * BrandToggle tab-switcher PostCard uses, per the requirement that both
- * views reuse the same display component.
+ * copy caption). Slide navigation (SlideNav) and the brand toggle
+ * (BrandToggle) are the exact same components PostCard uses, per the
+ * requirement that every view reuse the same display components.
  */
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
@@ -100,33 +107,48 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [selectedBrand, setSelectedBrand] = useState<Brand>(post.brands[0]?.brand ?? "facts4genius");
+  const [selectedSlideIndex, setSelectedSlideIndex] = useState(0);
+  const [selectedBrand, setSelectedBrand] = useState<Brand | null>(null);
 
-  const current = post.brands.find((b) => b.brand === selectedBrand) ?? post.brands[0] ?? null;
+  const sortedSlides = useMemo(() => [...post.slides].sort((a, b) => a.slide_index - b.slide_index), [post.slides]);
+  const currentSlide = sortedSlides[selectedSlideIndex] ?? sortedSlides[0] ?? null;
 
-  // Same load-gating PostCard.tsx uses: keep the last-loaded brand's image on
-  // screen (dimmed) with a spinner overlay until the newly toggled brand's
-  // image has actually finished loading, rather than letting the <img> src
-  // swap show a stale frame while it downloads.
-  const { src: gatedSrc, loading: imageLoading } = useGatedImage(current?.image_url ?? null);
+  // Preserve the brand choice across slide navigation when it still exists
+  // on the newly-selected slide, same as PostCard.tsx; otherwise fall back
+  // to that slide's own default (completed first, else whatever's there).
+  useEffect(() => {
+    if (!currentSlide) return;
+    if (selectedBrand && currentSlide.brands.some((b) => b.brand === selectedBrand)) return;
+    setSelectedBrand(currentSlide.brands[0]?.brand ?? null);
+  }, [currentSlide, selectedBrand]);
+
+  const current = currentSlide?.brands.find((b) => b.brand === selectedBrand) ?? currentSlide?.brands[0] ?? null;
+  const imageUrl = current?.image_url ?? currentSlide?.original_image_url ?? null;
+
+  // Same load-gating PostCard.tsx uses: keep the last-loaded image on screen
+  // (dimmed) with a spinner overlay until the newly toggled brand's / newly
+  // navigated slide's image has actually finished loading, rather than
+  // letting the <img> src swap show a stale frame while it downloads.
+  const { src: gatedSrc, loading: imageLoading } = useGatedImage(imageUrl);
 
   // Same fetch -> blob -> object URL -> anchor mechanism PostCard.tsx uses,
   // minus the authenticated `.../downloaded` call at the end -- that marks
   // the OWNER's post as downloaded (feeds their private "delete this job?"
   // nudge) and requires a bearer token neither present nor appropriate here.
-  // Downloads whichever brand is currently toggled.
+  // Downloads whichever slide+brand is currently being viewed.
   async function download() {
-    if (!current?.image_url) return;
+    if (!imageUrl || !currentSlide) return;
     setBusy(true);
     setActionError(null);
     try {
-      const response = await fetch(current.image_url);
+      const response = await fetch(imageUrl);
       if (!response.ok) throw new Error("Could not fetch the image.");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `${post.post_id}_${current.brand}_final.png`;
+      const suffix = current ? current.brand : "original";
+      anchor.download = `${post.post_id}_slide${currentSlide.slide_index}_${suffix}_final.png`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -151,29 +173,31 @@ function SharedPostCard({ post }: { post: SharedPost }) {
   return (
     <article className="post">
       <div className="post-media">
-        {gatedSrc ? (
-          <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
-            <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
-            {imageLoading && (
-              <div className="media-loading-overlay">
-                <div className="spinner" />
-              </div>
-            )}
-          </div>
-        ) : current?.image_url ? (
-          <div className="media-placeholder">
-            <div className="spinner" />
-            Loading image...
-          </div>
-        ) : (
-          <div className="media-placeholder">No preview</div>
-        )}
+        <SlideNav count={sortedSlides.length} selectedIndex={selectedSlideIndex} onSelect={setSelectedSlideIndex}>
+          {gatedSrc ? (
+            <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
+              <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
+              {imageLoading && (
+                <div className="media-loading-overlay">
+                  <div className="spinner" />
+                </div>
+              )}
+            </div>
+          ) : imageUrl ? (
+            <div className="media-placeholder">
+              <div className="spinner" />
+              Loading image...
+            </div>
+          ) : (
+            <div className="media-placeholder">No preview</div>
+          )}
+        </SlideNav>
       </div>
       <div className="post-body">
-        {post.brands.length > 1 && (
+        {currentSlide && currentSlide.brands.length > 1 && (
           <BrandToggle
-            brands={post.brands.map((b) => ({ brand: b.brand, status: "completed" as const }))}
-            selected={selectedBrand}
+            brands={currentSlide.brands.map((b) => ({ brand: b.brand, status: "completed" as const }))}
+            selected={selectedBrand ?? currentSlide.brands[0].brand}
             onSelect={setSelectedBrand}
           />
         )}
@@ -188,7 +212,7 @@ function SharedPostCard({ post }: { post: SharedPost }) {
         )}
 
         <div className="post-actions">
-          <button className="btn-primary btn-sm" onClick={download} disabled={busy || !current?.image_url}>
+          <button className="btn-primary btn-sm" onClick={download} disabled={busy || !imageUrl}>
             {busy ? "Downloading..." : "Download"}
           </button>
           <button className="btn-secondary btn-sm" onClick={copyCaption} disabled={!post.caption}>

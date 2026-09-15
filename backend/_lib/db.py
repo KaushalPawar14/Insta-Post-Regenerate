@@ -134,15 +134,73 @@ def count_posts_by_status(job_id: str) -> Dict[str, int]:
     return counts
 
 
+# --- post_slides -------------------------------------------------------------
+# One row per slide (a plain image post has exactly one). See
+# migration_006_carousel_slides.sql for the full rationale.
+def get_slide(slide_id: str) -> Optional[Dict[str, Any]]:
+    res = sb().table("post_slides").select("*").eq("id", slide_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+
+def list_slides(post_id: str) -> List[Dict[str, Any]]:
+    res = (
+        sb()
+        .table("post_slides")
+        .select("*")
+        .eq("post_id", post_id)
+        .order("slide_index", desc=False)
+        .execute()
+    )
+    return res.data or []
+
+
+def insert_slides(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    res = sb().table("post_slides").insert(rows).execute()
+    return res.data or []
+
+
+def update_slide(slide_id: str, **fields: Any) -> None:
+    if fields:
+        sb().table("post_slides").update(fields).eq("id", slide_id).execute()
+
+
+def fail_slide(slide_id: str, message: str) -> None:
+    update_slide(slide_id, status="failed_analysis", error=_truncate(message))
+
+
+def claim_slide(slide_id: str, *, expect_status: str, set_status: str, **fields: Any) -> Optional[Dict[str, Any]]:
+    """
+    Atomically move a slide from `expect_status` to `set_status`. Same
+    compare-and-swap pattern as `claim_post` -- guarantees the paid vision
+    call for one slide can be reached by AT MOST ONE invocation, no matter
+    how many times QStash redelivers the message for that slide.
+    """
+    payload = {"status": set_status, **fields}
+    res = (
+        sb()
+        .table("post_slides")
+        .update(payload)
+        .eq("id", slide_id)
+        .eq("status", expect_status)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 # --- job_post_brands ---------------------------------------------------------
-# One row per (post, brand) generation. See migration_004_multi_brand.sql for
-# the full rationale for a separate table rather than parallel columns.
-def get_post_brand(post_id: str, brand: str) -> Optional[Dict[str, Any]]:
+# One row per (slide, brand) generation. `post_id` stays denormalized on
+# every row alongside the real key, `slide_id` -- see
+# migration_006_carousel_slides.sql for why: every post-level rollup query
+# below (list_post_brands) keeps working unmodified across a post with more
+# than one slide.
+def get_post_brand(slide_id: str, brand: str) -> Optional[Dict[str, Any]]:
     res = (
         sb()
         .table("job_post_brands")
         .select("*")
-        .eq("post_id", post_id)
+        .eq("slide_id", slide_id)
         .eq("brand", brand)
         .limit(1)
         .execute()
@@ -151,7 +209,16 @@ def get_post_brand(post_id: str, brand: str) -> Optional[Dict[str, Any]]:
 
 
 def list_post_brands(post_id: str) -> List[Dict[str, Any]]:
+    """Every brand row across EVERY slide of this post -- what the post-level
+    generation rollup (compute_post_rollup_status) is computed over."""
     res = sb().table("job_post_brands").select("*").eq("post_id", post_id).execute()
+    return res.data or []
+
+
+def list_post_brands_for_slide(slide_id: str) -> List[Dict[str, Any]]:
+    """Just one slide's own brand rows -- used to decide whether THAT slide's
+    thumbnail can be dropped yet, independently of its siblings."""
+    res = sb().table("job_post_brands").select("*").eq("slide_id", slide_id).execute()
     return res.data or []
 
 
@@ -160,25 +227,25 @@ def insert_post_brand(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return res.data[0] if res.data else None
 
 
-def update_post_brand(post_id: str, brand: str, **fields: Any) -> None:
+def update_post_brand(slide_id: str, brand: str, **fields: Any) -> None:
     if fields:
-        sb().table("job_post_brands").update(fields).eq("post_id", post_id).eq("brand", brand).execute()
+        sb().table("job_post_brands").update(fields).eq("slide_id", slide_id).eq("brand", brand).execute()
 
 
-def fail_post_brand(post_id: str, brand: str, message: str) -> None:
-    update_post_brand(post_id, brand, status="failed_generation", error=_truncate(message))
+def fail_post_brand(slide_id: str, brand: str, message: str) -> None:
+    update_post_brand(slide_id, brand, status="failed_generation", error=_truncate(message))
 
 
 def claim_post_brand(
-    post_id: str, brand: str, *, expect_status: str, set_status: str, **fields: Any
+    slide_id: str, brand: str, *, expect_status: str, set_status: str, **fields: Any
 ) -> Optional[Dict[str, Any]]:
     """
-    Atomically move a (post, brand) generation from `expect_status` to
+    Atomically move a (slide, brand) generation from `expect_status` to
     `set_status`. Same compare-and-swap pattern as `claim_post` -- a single
-    `UPDATE ... WHERE post_id = ? AND brand = ? AND status = ?` is atomic in
+    `UPDATE ... WHERE slide_id = ? AND brand = ? AND status = ?` is atomic in
     Postgres, so this is what guarantees the paid images.edit call for one
-    brand can be reached by AT MOST ONE invocation, no matter how many times
-    QStash redelivers the message for that (post, brand) pair.
+    slide+brand can be reached by AT MOST ONE invocation, no matter how many
+    times QStash redelivers the message for that pair.
 
     Returns the updated row, or None if the row was not in `expect_status`.
     """
@@ -187,7 +254,7 @@ def claim_post_brand(
         sb()
         .table("job_post_brands")
         .update(payload)
-        .eq("post_id", post_id)
+        .eq("slide_id", slide_id)
         .eq("brand", brand)
         .eq("status", expect_status)
         .execute()
@@ -214,6 +281,17 @@ def upload(path: str, data: bytes, content_type: str) -> str:
         {"content-type": content_type, "upsert": "true"},
     )
     return path
+
+
+def download(path: str) -> bytes:
+    """
+    Read an object back from OUR OWN bucket -- used by analyze.py to reuse a
+    slide's already-downloaded, already-resized thumbnail (created by
+    prepare_slides.py) instead of re-fetching from Instagram's CDN a second
+    time, which may have expired by then anyway. Never used for anything
+    outside this app's own private bucket.
+    """
+    return sb().storage.from_(config.bucket()).download(path)
 
 
 def remove(paths: List[str]) -> None:

@@ -30,16 +30,22 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
 
   if (!job) return json({ error: "Job not found." }, 404);
 
-  const [{ data: posts }, { data: brandRows }] = await Promise.all([
+  const [{ data: posts }, { data: slideRows }, { data: brandRows }] = await Promise.all([
     sb.from("job_posts").select("thumb_path, final_image_path").eq("job_id", jobId).eq("user_id", userId),
-    // Per-brand generated images (facts4genius/factsbytes) live here, not on
-    // job_posts, for every post generated after the multi-brand migration --
+    // Per-slide durable originals (prepare_slides.py's downloads, or
+    // analyze.py's for a plain image post) live here, not on job_posts, for
+    // every post scraped after the carousel-feature migration --
+    // job_posts.thumb_path above only ever covers pre-migration posts.
+    sb.from("post_slides").select("thumb_path").eq("job_id", jobId).eq("user_id", userId),
+    // Per-slide-per-brand generated images live here, not on job_posts, for
+    // every post generated after the multi-brand migration --
     // job_posts.final_image_path above only ever covers pre-migration posts.
     sb.from("job_post_brands").select("final_image_path").eq("job_id", jobId).eq("user_id", userId),
   ]);
 
   const paths = [
     ...(posts ?? []).flatMap((p) => [p.thumb_path, p.final_image_path]),
+    ...(slideRows ?? []).map((s) => s.thumb_path),
     ...(brandRows ?? []).map((b) => b.final_image_path),
   ].filter((p): p is string => Boolean(p));
 

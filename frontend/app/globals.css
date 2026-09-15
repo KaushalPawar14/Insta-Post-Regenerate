@@ -847,6 +847,54 @@ button:not(:disabled):hover {
   background: rgba(0, 0, 0, 0.2);
 }
 
+/* --------------------------------------------------------------- slide-nav --
+   Left/right arrow navigation across a post's slides. Fills the same
+   .post-media box the single-image content already occupies; self-hides its
+   arrows/count below 2 slides (see components/SlideNav.tsx), so a plain
+   image post looks pixel-identical to before this existed. */
+.slide-nav {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.slide-nav-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 99px;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.slide-nav-arrow:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+.slide-nav-arrow-left {
+  left: 8px;
+}
+.slide-nav-arrow-right {
+  right: 8px;
+}
+.slide-nav-count {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+
 /* =========================================================================
    MOBILE (≈360px–640px). Desktop styling above this block is untouched --
    every rule here either lives inside this query or a narrower one nested

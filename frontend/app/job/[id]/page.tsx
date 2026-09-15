@@ -13,7 +13,7 @@ import { ALL_BRANDS, BRAND_LABELS, type Brand } from "@/lib/types";
 export default function JobPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { job, posts, brands, brandsForPost, loading, live, error, reload } = useJob(id);
+  const { job, posts, brands, slides, brandsForPost, slidesForPost, loading, live, error, reload } = useJob(id);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
@@ -22,6 +22,10 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
 
   const awaiting = useMemo(
     () => posts.filter((p) => p.status === "awaiting_confirmation"),
+    [posts]
+  );
+  const awaitingSlideSelection = useMemo(
+    () => posts.filter((p) => p.status === "awaiting_slide_selection"),
     [posts]
   );
   const completed = useMemo(() => posts.filter((p) => p.status === "completed"), [posts]);
@@ -42,6 +46,26 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
       else next.add(brand);
       return next;
     });
+  }
+
+  async function continueToAnalysis() {
+    setBusy("continue-slides");
+    setActionError(null);
+    try {
+      const response = await authedFetch(`/api/jobs/${id}/continue-slides`, { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not continue to analysis.");
+      if (payload.skipped_posts > 0) {
+        setActionError(
+          `${payload.skipped_posts} post${payload.skipped_posts === 1 ? "" : "s"} still need at least one slide checked (or removed) before continuing.`
+        );
+      }
+      reload();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function confirmAndGenerate() {
@@ -161,7 +185,25 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
         </div>
       )}
 
-      <JobProgress job={job} posts={posts} brands={brands} live={live} />
+      <JobProgress job={job} posts={posts} brands={brands} slides={slides} live={live} />
+
+      {awaitingSlideSelection.length > 0 && (
+        <div className="banner banner-warn" style={{ marginTop: 16 }}>
+          <div style={{ width: "100%" }}>
+            <strong>
+              {awaitingSlideSelection.length} carousel post{awaitingSlideSelection.length === 1 ? "" : "s"} ready
+              for slide review.
+            </strong>{" "}
+            Uncheck any slides you don&apos;t want analyzed or generated on each card below, then Continue —
+            unchecked slides cost nothing and keep their original image in the result.
+          </div>
+          <div className="banner-actions">
+            <button className="btn-primary btn-sm" onClick={continueToAnalysis} disabled={busy !== null}>
+              {busy === "continue-slides" ? "Continuing..." : "Continue to analysis"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {awaiting.length > 0 && (
         <div className="banner banner-warn" style={{ marginTop: 16 }}>
@@ -209,7 +251,13 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
       ) : (
         <div className="post-grid">
           {posts.map((post) => (
-            <PostCard key={post.id} post={post} brands={brandsForPost(post.id)} onChanged={reload} />
+            <PostCard
+              key={post.id}
+              post={post}
+              brands={brandsForPost(post.id)}
+              slides={slidesForPost(post.id)}
+              onChanged={reload}
+            />
           ))}
         </div>
       )}

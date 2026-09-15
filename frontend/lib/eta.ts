@@ -1,4 +1,4 @@
-import { postCostUsd, type JobPost, type JobPostBrand, type PostStatus } from "./types";
+import { postCostUsd, type JobPost, type JobPostBrand, type PostStatus, type Slide } from "./types";
 
 /**
  * Free-tier QStash caps parallelism at 10, so a batch of posts moves through
@@ -32,7 +32,8 @@ export interface Progress {
   counts: Record<PostStatus, number>;
   /** Posts the pipeline is actively working through. */
   inFlight: number;
-  /** Posts parked on the user's Confirm click -- deliberately NOT in the ETA. */
+  /** Posts parked on the user -- a Confirm click, or (for a carousel) slide
+   * selection -- deliberately NOT in the ETA. */
   awaitingUser: number;
   completed: number;
   failed: number;
@@ -52,10 +53,12 @@ export interface Progress {
 export function computeProgress(
   posts: JobPost[],
   brands: JobPostBrand[] = [],
+  slides: Slide[] = [],
   targetTotal?: number
 ): Progress {
   const counts = {
     pending: 0,
+    awaiting_slide_selection: 0,
     analyzing: 0,
     awaiting_confirmation: 0,
     queued_for_generation: 0,
@@ -70,7 +73,8 @@ export function computeProgress(
   for (const post of posts) {
     counts[post.status] = (counts[post.status] ?? 0) + 1;
     const postBrands = brands.filter((b) => b.post_id === post.id);
-    totalCostUsd += postCostUsd(post, postBrands);
+    const postSlides = slides.filter((s) => s.post_id === post.id);
+    totalCostUsd += postCostUsd(post, postBrands, postSlides);
   }
 
   const analyzeSamples = durations(posts, "analyze_started_at", "analyze_completed_at");
@@ -84,10 +88,11 @@ export function computeProgress(
 
   // The two phases are estimated separately because they are gated
   // differently: analysis runs on its own, generation only runs on posts the
-  // user has already confirmed. Posts sitting in `awaiting_confirmation` are
-  // excluded entirely -- their remaining time depends on the user, not on us,
-  // and folding them in would produce a meaningless countdown. Removed posts
-  // are excluded too -- they will never be processed further.
+  // user has already confirmed. Posts sitting in `awaiting_confirmation` (or,
+  // for a carousel, `awaiting_slide_selection`) are excluded entirely --
+  // their remaining time depends on the user, not on us, and folding them in
+  // would produce a meaningless countdown. Removed posts are excluded too --
+  // they will never be processed further.
   const analyzeSeconds = Math.ceil(pendingAnalyze / CONCURRENCY) * avgAnalyzeSeconds;
   const generateSeconds = Math.ceil(pendingGenerate / CONCURRENCY) * avgGenerateSeconds;
 
@@ -97,7 +102,7 @@ export function computeProgress(
     total: targetTotal ?? posts.length,
     counts,
     inFlight,
-    awaitingUser: counts.awaiting_confirmation,
+    awaitingUser: counts.awaiting_confirmation + counts.awaiting_slide_selection,
     completed: counts.completed,
     failed: counts.failed_analysis + counts.failed_generation,
     removed: counts.removed,

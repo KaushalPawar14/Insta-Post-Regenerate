@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { authedFetch } from "@/lib/supabase-browser";
 import { useSignedUrl, useGatedImage } from "@/lib/use-job";
 import {
@@ -16,12 +16,15 @@ import {
   type Brand,
   type JobPost,
   type JobPostBrand,
+  type Slide,
 } from "@/lib/types";
 import PostStepper from "./PostStepper";
 import BrandToggle from "./BrandToggle";
+import SlideNav from "./SlideNav";
 
 const BADGE_CLASS: Record<JobPost["status"], string> = {
   pending: "badge-idle",
+  awaiting_slide_selection: "badge-wait",
   analyzing: "badge-work",
   awaiting_confirmation: "badge-wait",
   queued_for_generation: "badge-work",
@@ -35,10 +38,12 @@ const BADGE_CLASS: Record<JobPost["status"], string> = {
 export default function PostCard({
   post,
   brands,
+  slides,
   onChanged,
 }: {
   post: JobPost;
   brands: JobPostBrand[];
+  slides: Slide[];
   onChanged: () => void;
 }) {
   const [caption, setCaption] = useState(post.refined_caption);
@@ -47,43 +52,60 @@ export default function PostCard({
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<Brand | null>(null);
+  const [selectedSlideIndex, setSelectedSlideIndex] = useState(0);
 
   const removed = post.status === "removed";
+  const selectingSlides = post.status === "awaiting_slide_selection";
 
-  // Once ANY brand has been confirmed for this post, `brands` is non-empty --
-  // that's the sole signal for "past confirmation," equivalent to (but
-  // simpler than) checking post.status against the generation-phase values,
-  // since a brand row only ever exists once the post was confirmed for it.
+  const sortedSlides = useMemo(() => [...slides].sort((a, b) => a.slide_index - b.slide_index), [slides]);
+  const currentSlide = sortedSlides[selectedSlideIndex] ?? sortedSlides[0] ?? null;
+
+  // Once ANY brand has been confirmed for this post (across ANY of its
+  // slides), `brands` is non-empty -- that's the sole signal for "past
+  // confirmation," equivalent to (but simpler than) checking post.status
+  // against the generation-phase values, since a brand row only ever exists
+  // once the post was confirmed for it.
   const confirmed = brands.length > 0;
   const anyCompleted = brands.some((b) => b.status === "completed");
 
-  // Pick a default tab once brands appear, preferring a completed one (so
-  // there's something to look at); never override an explicit or
-  // already-picked selection afterward, even as the other brand's status
-  // changes later -- switching the image out from under someone mid-review
-  // would be worse than leaving their choice alone.
+  // This slide's own brand rows -- "also generate for X" / "retry X" now
+  // operate per-slide, not per-post, since a carousel's slides each
+  // generate independently.
+  const currentSlideBrands = useMemo(
+    () => (currentSlide ? brands.filter((b) => b.slide_id === currentSlide.id) : []),
+    [brands, currentSlide]
+  );
+
+  // Pick a brand tab for the current slide, preferring one already
+  // completed; PRESERVE the user's choice across slide navigation when that
+  // same brand also exists on the newly-selected slide (flipping to the next
+  // slide shouldn't reset "I was comparing Facts Bytes" back to whatever
+  // finished first), and only fall back to this slide's own default when it
+  // doesn't.
   useEffect(() => {
-    if (selectedBrand || brands.length === 0) return;
-    const completed = brands.find((b) => b.status === "completed");
-    setSelectedBrand((completed ?? brands[0]).brand);
-  }, [brands, selectedBrand]);
+    if (!currentSlide) return;
+    if (selectedBrand && currentSlideBrands.some((b) => b.brand === selectedBrand)) return;
+    const completed = currentSlideBrands.find((b) => b.status === "completed");
+    setSelectedBrand(completed ? completed.brand : currentSlideBrands[0]?.brand ?? null);
+  }, [currentSlide, currentSlideBrands, selectedBrand]);
 
-  const currentBrand = brands.find((b) => b.brand === selectedBrand) ?? null;
+  const currentBrand = currentSlideBrands.find((b) => b.brand === selectedBrand) ?? null;
 
-  // Show the generated image once the selected brand has one; before any
-  // brand is confirmed, the original thumbnail is shown ONLY so the user
-  // knows what they are confirming.
-  const finalUrl = useSignedUrl(currentBrand?.final_image_path);
-  const thumbUrl = useSignedUrl(confirmed ? null : post.thumb_path);
+  // A slide only ever shows generated content once IT (not the post as a
+  // whole) was actually checked and successfully analyzed. An unchecked
+  // (skipped) slide, or one whose own analysis failed, falls back to its
+  // durable original image instead -- permanently, for a skipped slide.
+  const showsGeneratedContent = currentSlide?.status === "analyzed";
 
-  // Gates the visible <img> behind the browser actually finishing the new
-  // brand's image, instead of letting the src swap show a stale frame while
-  // it downloads -- `gatedSrc` keeps the last-LOADED brand's image on screen
-  // (so switching the toggle never blanks the card) and `imageLoading` drives
-  // a spinner overlay for exactly the gap where the toggle's selection and
-  // the visible image would otherwise disagree.
+  const finalUrl = useSignedUrl(showsGeneratedContent ? currentBrand?.final_image_path : null);
+  const slideThumbUrl = useSignedUrl(currentSlide?.thumb_path);
+  const thumbUrl = useSignedUrl(!confirmed ? post.thumb_path : null);
+
+  // Gates the visible generated <img> behind the browser actually finishing
+  // the new brand's image, instead of letting the src swap show a stale
+  // frame while it downloads -- see lib/use-job.ts's useGatedImage.
   const { src: gatedSrc, loading: imageLoading } = useGatedImage(
-    currentBrand?.status === "completed" ? finalUrl : null
+    showsGeneratedContent && currentBrand?.status === "completed" ? finalUrl : null
   );
 
   // Adopt server-side caption changes, but never clobber an unsaved edit.
@@ -116,11 +138,31 @@ export default function PostCard({
     call("remove", `/api/posts/${post.id}/remove`, { method: "POST" });
   };
 
-  const generateBrand = (brand: Brand) =>
-    call("generate-" + brand, `/api/posts/${post.id}/generate-brand`, {
+  const generateBrand = (brand: Brand) => {
+    if (!currentSlide) return;
+    call("generate-" + brand, `/api/slides/${currentSlide.id}/generate-brand`, {
       method: "POST",
       body: JSON.stringify({ brand }),
     });
+  };
+
+  async function toggleSlideIncluded(slide: Slide) {
+    setBusy("slide-" + slide.id);
+    setError(null);
+    try {
+      const response = await authedFetch(`/api/slides/${slide.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ include_in_analysis: !slide.include_in_analysis }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not update this slide.");
+      onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function saveCaption() {
     const ok = await call("save", `/api/posts/${post.id}/caption`, {
@@ -133,18 +175,24 @@ export default function PostCard({
     }
   }
 
+  const downloadUrl = showsGeneratedContent ? finalUrl : slideThumbUrl;
+  const downloadEnabled = showsGeneratedContent
+    ? currentBrand?.status === "completed" && !!finalUrl
+    : !!slideThumbUrl;
+
   async function download() {
-    if (!finalUrl || !currentBrand) return;
+    if (!downloadUrl || !currentSlide) return;
     setBusy("download");
     setError(null);
     try {
-      const response = await fetch(finalUrl);
+      const response = await fetch(downloadUrl);
       if (!response.ok) throw new Error("Could not fetch the image.");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `${post.post_id}_${currentBrand.brand}_final.png`;
+      const brandSuffix = showsGeneratedContent && currentBrand ? `_${currentBrand.brand}` : "_original";
+      anchor.download = `${post.post_id}_slide${currentSlide.slide_index}${brandSuffix}_final.png`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -173,17 +221,98 @@ export default function PostCard({
     post.status
   );
 
-  const costInr = usdToInr(postCostUsd(post, brands), usdToInrRate());
+  const costInr = usdToInr(postCostUsd(post, brands, slides), usdToInrRate());
 
-  // The one brand (if any) with no row at all yet -- "Also generate for X".
-  const missingBrand = ALL_BRANDS.find((b) => !brands.some((row) => row.brand === b)) ?? null;
+  // The one brand (if any) with no row at all yet on the CURRENT slide --
+  // "Also generate for X." Only meaningful once this slide was actually
+  // checked and analyzed; a skipped/failed slide has nothing to generate
+  // from.
+  const missingBrand =
+    showsGeneratedContent ? ALL_BRANDS.find((b) => !currentSlideBrands.some((row) => row.brand === b)) ?? null : null;
   const currentBrandStale = currentBrand ? isStaleBrandGeneration(currentBrand) : false;
+
+  function renderStageMedia() {
+    if (!currentSlide) {
+      return <div className="media-placeholder">No preview</div>;
+    }
+    if (!slideThumbUrl) {
+      return (
+        <div className="media-placeholder">
+          <div className="spinner" />
+          Preparing preview...
+        </div>
+      );
+    }
+    return <img src={slideThumbUrl} alt="" aria-hidden="true" loading="lazy" />;
+  }
+
+  function renderConfirmedMedia() {
+    if (!currentSlide) {
+      return <div className="media-placeholder">No preview</div>;
+    }
+    if (!showsGeneratedContent) {
+      // Skipped in stage 2, or this slide's own analysis failed -- its
+      // original scraped image stands in permanently.
+      return slideThumbUrl ? (
+        <img src={slideThumbUrl} alt={`Original slide ${currentSlide.slide_index + 1}`} loading="lazy" />
+      ) : (
+        <div className="media-placeholder">No preview</div>
+      );
+    }
+    if (currentBrand?.status === "completed" && gatedSrc) {
+      return (
+        <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
+          <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
+          {imageLoading && (
+            <div className="media-loading-overlay">
+              <div className="spinner" />
+            </div>
+          )}
+        </div>
+      );
+    }
+    if (currentBrand?.status === "completed") {
+      return (
+        <div className="media-placeholder">
+          <div className="spinner" />
+          Loading image...
+        </div>
+      );
+    }
+    if (currentBrand?.status === "failed_generation" || currentBrandStale) {
+      return <div className="media-placeholder">{currentBrandStale ? "Timed out" : "Generation failed"}</div>;
+    }
+    if (currentBrand) {
+      return (
+        <div className="media-placeholder">
+          <div className="spinner" />
+          Generating {BRAND_LABELS[currentBrand.brand]}...
+        </div>
+      );
+    }
+    // No brand confirmed for this slide at all yet (it was analyzed, but
+    // e.g. the OTHER slide is what got confirmed so far, or nothing has
+    // reached this slide's brands yet) -- show its own preview.
+    return slideThumbUrl ? (
+      <img src={slideThumbUrl} alt="" aria-hidden="true" loading="lazy" />
+    ) : (
+      <div className="media-placeholder">No preview</div>
+    );
+  }
 
   return (
     <article className={`post ${removed ? "post-removed" : ""}`}>
-      <div className={`post-media ${!removed && (!confirmed || (confirmed && !anyCompleted)) ? "pending" : ""}`}>
+      <div
+        className={`post-media ${
+          !removed && !selectingSlides && (!confirmed || (confirmed && !anyCompleted)) ? "pending" : ""
+        }`}
+      >
         {removed ? (
           <div className="media-placeholder">Excluded from generation</div>
+        ) : selectingSlides ? (
+          <SlideNav count={sortedSlides.length} selectedIndex={selectedSlideIndex} onSelect={setSelectedSlideIndex}>
+            {renderStageMedia()}
+          </SlideNav>
         ) : !confirmed ? (
           thumbUrl ? (
             <>
@@ -192,33 +321,27 @@ export default function PostCard({
                 Original post — shown only for review. The generated image replaces it.
               </div>
             </>
+          ) : sortedSlides.length > 0 ? (
+            <SlideNav count={sortedSlides.length} selectedIndex={selectedSlideIndex} onSelect={setSelectedSlideIndex}>
+              {working && !stale ? (
+                <div className="media-placeholder">
+                  <div className="spinner" />
+                  {currentSlide ? `Analyzing slide ${currentSlide.slide_index + 1}...` : label}
+                </div>
+              ) : (
+                renderStageMedia()
+              )}
+            </SlideNav>
           ) : (
             <div className="media-placeholder">
               {working && !stale ? <div className="spinner" /> : null}
               {stale ? "Timed out" : working ? label : "No preview"}
             </div>
           )
-        ) : currentBrand?.status === "completed" && gatedSrc ? (
-          <div className={`media-image-wrap ${imageLoading ? "loading" : ""}`}>
-            <img src={gatedSrc} alt={`Generated post ${post.post_id}`} loading="lazy" />
-            {imageLoading && (
-              <div className="media-loading-overlay">
-                <div className="spinner" />
-              </div>
-            )}
-          </div>
-        ) : currentBrand?.status === "completed" ? (
-          <div className="media-placeholder">
-            <div className="spinner" />
-            Loading image...
-          </div>
-        ) : currentBrand?.status === "failed_generation" || currentBrandStale ? (
-          <div className="media-placeholder">{currentBrandStale ? "Timed out" : "Generation failed"}</div>
         ) : (
-          <div className="media-placeholder">
-            <div className="spinner" />
-            {currentBrand ? `Generating ${BRAND_LABELS[currentBrand.brand]}...` : "Generating..."}
-          </div>
+          <SlideNav count={sortedSlides.length} selectedIndex={selectedSlideIndex} onSelect={setSelectedSlideIndex}>
+            {renderConfirmedMedia()}
+          </SlideNav>
         )}
       </div>
 
@@ -232,8 +355,8 @@ export default function PostCard({
 
         <PostStepper status={post.status} />
 
-        {brands.length > 1 && selectedBrand && (
-          <BrandToggle brands={brands} selected={selectedBrand} onSelect={setSelectedBrand} />
+        {!selectingSlides && !removed && confirmed && currentSlideBrands.length > 1 && (
+          <BrandToggle brands={currentSlideBrands} selected={selectedBrand ?? currentSlideBrands[0].brand} onSelect={setSelectedBrand} />
         )}
 
         {post.error && !stale && <div className="post-err">{post.error}</div>}
@@ -242,9 +365,38 @@ export default function PostCard({
             {BRAND_LABELS[currentBrand.brand]}: {currentBrand.error}
           </div>
         )}
+        {currentSlide?.status === "failed_analysis" && !selectingSlides && (
+          <div className="post-err">
+            Slide {currentSlide.slide_index + 1}: analysis failed
+            {currentSlide.error ? ` — ${currentSlide.error}` : ""}. Showing its original image.
+          </div>
+        )}
         {error && <div className="post-err">{error}</div>}
 
-        {removed ? (
+        {selectingSlides ? (
+          <>
+            <p className="sub" style={{ margin: 0 }}>
+              This post has {sortedSlides.length} slides. Uncheck any you don&apos;t want analyzed or
+              generated — unchecked slides cost nothing and keep their original image in the result.
+            </p>
+            {currentSlide && (
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={currentSlide.include_in_analysis}
+                  onChange={() => toggleSlideIncluded(currentSlide)}
+                  disabled={busy !== null}
+                />
+                Include slide {currentSlide.slide_index + 1} in analysis
+              </label>
+            )}
+            <div className="post-actions">
+              <button className="btn-danger btn-sm" onClick={remove} disabled={busy !== null}>
+                {busy === "remove" ? "Removing..." : "Remove"}
+              </button>
+            </div>
+          </>
+        ) : removed ? (
           <div className="removed-strip">
             This post was excluded before confirmation. It will never be generated.
           </div>
@@ -273,7 +425,7 @@ export default function PostCard({
               <button
                 className="btn-primary btn-sm"
                 onClick={download}
-                disabled={busy !== null || currentBrand?.status !== "completed" || !finalUrl}
+                disabled={busy !== null || !downloadEnabled}
               >
                 {busy === "download" ? "Downloading..." : post.downloaded ? "Download again" : "Download"}
               </button>
@@ -305,7 +457,7 @@ export default function PostCard({
                 </button>
               </div>
             )}
-            {brands
+            {currentSlideBrands
               .filter((b) => b.status === "failed_generation" || isStaleBrandGeneration(b))
               .map((b) => (
                 <div className="post-actions" key={b.brand}>
@@ -341,7 +493,7 @@ export default function PostCard({
                 </button>
               )}
               {confirmed &&
-                brands
+                currentSlideBrands
                   .filter((b) => b.status === "failed_generation" || isStaleBrandGeneration(b))
                   .map((b) => (
                     <button

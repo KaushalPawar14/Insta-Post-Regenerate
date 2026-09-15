@@ -10,10 +10,12 @@ import {
   type JobPost,
   type JobPostBrand,
   type PostStatus,
+  type Slide,
 } from "@/lib/types";
 
 const STAGE_META: { key: PostStatus; label: string; color: string }[] = [
   { key: "pending", label: "Scraped", color: "var(--text-faint)" },
+  { key: "awaiting_slide_selection", label: "Select slides", color: "var(--accent)" },
   { key: "analyzing", label: "Analyzing", color: "var(--info)" },
   { key: "awaiting_confirmation", label: "Awaiting confirmation", color: "var(--accent)" },
   { key: "queued_for_generation", label: "Queued", color: "var(--info)" },
@@ -55,14 +57,16 @@ export default function JobProgress({
   job,
   posts,
   brands,
+  slides,
   live,
 }: {
   job: Job;
   posts: JobPost[];
   brands: JobPostBrand[];
+  slides: Slide[];
   live: boolean;
 }) {
-  const progress = computeProgress(posts, brands, job.total_posts || posts.length || job.max_posts);
+  const progress = computeProgress(posts, brands, slides, job.total_posts || posts.length || job.max_posts);
   const total = Math.max(progress.total, 1);
 
   const pct = (n: number) => `${(n / total) * 100}%`;

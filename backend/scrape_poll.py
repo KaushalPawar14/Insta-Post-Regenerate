@@ -30,7 +30,7 @@ from apify_client import ApifyClient  # noqa: E402
 from _lib import config, db, queue  # noqa: E402
 from _lib.handler import TerminalError
 from _lib.pipeline import now_iso  # noqa: E402
-from _lib.schemas import JobStatus, PostStatus  # noqa: E402
+from _lib.schemas import JobStatus, PostStatus, SlideStatus  # noqa: E402
 
 # ~15s x 40 = up to 10 minutes of scraping before we give up. Each poll is a
 # separate short invocation, so none of this counts against the 300s ceiling.
@@ -54,6 +54,30 @@ def _first(item: Dict[str, Any], *keys: str) -> Optional[Any]:
         if value:
             return value
     return None
+
+
+def _slide_urls(item: Dict[str, Any], thumbnail: str) -> List[str]:
+    """
+    Extract the ordered list of slide image URLs for one post.
+
+    Confirmed against two real sample Apify actor outputs (one `type:
+    "Image"`, one `type: "Sidecar"` with 5 slides) before writing this:
+    a Sidecar post's top-level `images` array holds the slide URLs in order,
+    and matches its `childPosts[i].displayUrl` 1:1 by index. A plain Image
+    post has an empty `images` array and exactly one implicit slide --
+    `thumbnail` (already resolved by the caller). This holds for both
+    profile-scraped and single-post-URL fetches: `scrape.py` sends the SAME
+    actor the SAME `directUrls` + `resultsType: "posts"` shape for both
+    modes (differing only in `resultsLimit`), so a post's own item shape is a
+    function of the post's type, not of which mode fetched it.
+    """
+    if item.get("type") == "Sidecar":
+        images = item.get("images")
+        if isinstance(images, list) and images:
+            urls = [str(u) for u in images if u]
+            if urls:
+                return urls
+    return [thumbnail]
 
 
 def normalise_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -113,6 +137,7 @@ def normalise_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "comments": comments,
         "caption": item.get("caption") or "",
         "thumbnail_url": str(thumbnail),
+        "slide_urls": _slide_urls(item, str(thumbnail)),
     }
 
 
@@ -245,6 +270,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
             "original_caption": item["caption"],
             "raw_image_url": item["thumbnail_url"],
             "rank": index,
+            "slide_count": len(item["slide_urls"]),
             "status": PostStatus.PENDING,
         }
         for index, item in enumerate(selected)
@@ -262,15 +288,55 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
     # rather than deleted -- the lowest-risk way to reverse this later if the
     # free-credits situation changes. See README "Cost tracking".
 
-    # Fan out: one analyze message per post. This replaces the LangGraph
-    # Scraper -> Analyzer edge.
-    for row in inserted:
-        queue.publish(
-            "analyze",
-            {"post_row_id": row["id"]},
-            retries=2,
-            dedup_id=f"analyze-{row['id']}",
+    # Create each post's slide row(s), then fan out ONE message per post:
+    #
+    #   - a plain image post (exactly one slide) goes straight to `analyze`,
+    #     targeting that one slide -- unchanged in spirit from before
+    #     carousels existed, just addressed by slide id instead of post id.
+    #   - a carousel goes to the NEW `prepare_slides` stage instead, which
+    #     downloads every slide's image into our own Storage BEFORE the user
+    #     is ever shown stage 2 (so an arbitrarily long human review never
+    #     depends on Instagram's CDN link staying alive -- see
+    #     prepare_slides.py's module docstring). No analysis is fanned out
+    #     yet for a carousel; that happens only once the user hits
+    #     "Continue to analysis" for the slides they kept checked.
+    #
+    # Matched by `rank` rather than by position in `inserted` -- the bulk
+    # insert's response order is not a contract worth relying on.
+    inserted_by_rank = {row["rank"]: row for row in inserted}
+    for index, item in enumerate(selected):
+        row = inserted_by_rank.get(index)
+        if not row:
+            continue  # this one row's insert didn't come back; nothing to fan out
+        slide_urls = item["slide_urls"]
+        slide_rows = db.insert_slides(
+            [
+                {
+                    "post_id": row["id"],
+                    "job_id": job_id,
+                    "user_id": job["user_id"],
+                    "slide_index": slide_index,
+                    "raw_image_url": url,
+                    "status": SlideStatus.PENDING,
+                }
+                for slide_index, url in enumerate(slide_urls)
+            ]
         )
+        if len(slide_urls) <= 1:
+            if slide_rows:
+                queue.publish(
+                    "analyze",
+                    {"slide_row_id": slide_rows[0]["id"]},
+                    retries=2,
+                    dedup_id=f"analyze-{slide_rows[0]['id']}",
+                )
+        else:
+            queue.publish(
+                "prepare_slides",
+                {"post_row_id": row["id"]},
+                retries=2,
+                dedup_id=f"prepare-slides-{row['id']}",
+            )
 
     print(f"Agent 1: Successfully secured top {len(inserted)} posts and updated state.")
     return {"posts": len(inserted)}

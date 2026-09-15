@@ -15,11 +15,16 @@ const VALID_BRANDS = new Set(["facts4genius", "factsbytes"]);
  * This does not weaken the per-post rule -- it is still an explicit,
  * deliberate user action, and it only ever touches posts already parked in
  * `awaiting_confirmation`. Each post is claimed individually and atomically,
- * exactly as before multi-brand existed; the only difference is that
+ * exactly as before multi-brand existed; the only difference (added for
+ * carousel support -- see migration_006_carousel_slides.sql) is that
  * confirming now creates one `job_post_brands` row (and publishes one
- * generate message) PER SELECTED BRAND per post, instead of one row per
- * post. The Analyzer is never re-run -- every brand reuses the same
- * `job_posts.image_generation_prompt`/`extracted_text` this post already has.
+ * generate message) per SELECTED BRAND per CHECKED SLIDE of the post, not
+ * one row per post -- a plain image post has exactly one slide, so its
+ * behavior is unchanged. Slides the user left unchecked in stage 2 (never
+ * analyzed) are skipped entirely, by construction: the slide query below
+ * only ever matches `status = 'analyzed'` rows. The Analyzer is never
+ * re-run -- every brand reuses that slide's own
+ * `post_slides.image_generation_prompt`/`extracted_text`.
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const userId = await userFromRequest(request);
@@ -67,45 +72,62 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
     if (!claimed) continue; // raced with something else; fine.
 
+    const { data: checkedSlides } = await sb
+      .from("post_slides")
+      .select("id")
+      .eq("post_id", claimed.id)
+      .eq("status", "analyzed")
+      .order("slide_index", { ascending: true });
+
     let postQueuedAny = false;
 
-    for (const brand of brands) {
-      const { data: brandRow, error: insertError } = await sb
-        .from("job_post_brands")
-        .insert({ post_id: claimed.id, job_id: jobId, user_id: userId, brand, status: "queued_for_generation" })
-        .select("id")
-        .maybeSingle();
-
-      if (insertError || !brandRow) {
-        failures.push(`${claimed.id}:${brand}`);
-        continue;
-      }
-
-      try {
-        await enqueueGenerate(claimed.id, brand);
-        queued += 1;
-        postQueuedAny = true;
-      } catch (err) {
-        // Isolated to just this brand's row -- the OTHER brand (if selected)
-        // may have already enqueued successfully for this same post, and
-        // must not be reverted because this one failed to queue.
-        await sb
+    for (const slide of checkedSlides ?? []) {
+      for (const brand of brands) {
+        const { data: brandRow, error: insertError } = await sb
           .from("job_post_brands")
-          .update({
-            status: "failed_generation",
-            error: `Could not queue generation: ${(err as Error).message}`,
+          .insert({
+            slide_id: slide.id,
+            post_id: claimed.id,
+            job_id: jobId,
+            user_id: userId,
+            brand,
+            status: "queued_for_generation",
           })
-          .eq("id", brandRow.id);
-        failures.push(`${claimed.id}:${brand}`);
+          .select("id")
+          .maybeSingle();
+
+        if (insertError || !brandRow) {
+          failures.push(`${slide.id}:${brand}`);
+          continue;
+        }
+
+        try {
+          await enqueueGenerate(slide.id, brand);
+          queued += 1;
+          postQueuedAny = true;
+        } catch (err) {
+          // Isolated to just this slide+brand row -- other slides/brands of
+          // the same post may have already enqueued successfully, and must
+          // not be reverted because this one failed to queue.
+          await sb
+            .from("job_post_brands")
+            .update({
+              status: "failed_generation",
+              error: `Could not queue generation: ${(err as Error).message}`,
+            })
+            .eq("id", brandRow.id);
+          failures.push(`${slide.id}:${brand}`);
+        }
       }
     }
 
     if (!postQueuedAny) {
-      // Every brand failed to even get queued for this post -- there is now
-      // no job_post_brands row that will ever trigger generate.py's rollup,
-      // so left as "queued_for_generation" this post would be stuck forever
-      // with nothing happening. Revert it to awaiting_confirmation so the
-      // user sees it needs confirming again rather than silently hanging.
+      // Every slide+brand failed to even get queued for this post (or it had
+      // no checked slides at all) -- there is now no job_post_brands row
+      // that will ever trigger generate.py's rollup, so left as
+      // "queued_for_generation" this post would be stuck forever with
+      // nothing happening. Revert it to awaiting_confirmation so the user
+      // sees it needs confirming again rather than silently hanging.
       await sb
         .from("job_posts")
         .update({

@@ -8,6 +8,7 @@ export type JobStatus =
 
 export type PostStatus =
   | "pending"
+  | "awaiting_slide_selection"
   | "analyzing"
   | "awaiting_confirmation"
   | "queued_for_generation"
@@ -16,6 +17,29 @@ export type PostStatus =
   | "failed_analysis"
   | "failed_generation"
   | "removed";
+
+// --- carousel / multi-slide posts ----------------------------------------
+export type SlideStatus = "pending" | "analyzing" | "analyzed" | "failed_analysis" | "skipped";
+
+export interface Slide {
+  id: string;
+  post_id: string;
+  job_id: string;
+  user_id: string;
+  slide_index: number;
+  raw_image_url: string;
+  thumb_path: string | null;
+  include_in_analysis: boolean;
+  status: SlideStatus;
+  image_generation_prompt: string;
+  extracted_text: string;
+  refined_caption: string;
+  vision_cost_usd: number;
+  error: string | null;
+  analyze_started_at: string | null;
+  analyze_completed_at: string | null;
+  created_at: string;
+}
 
 // --- multi-brand generation ---------------------------------------------
 export type Brand = "facts4genius" | "factsbytes";
@@ -34,6 +58,7 @@ export type BrandGenerationStatus =
 
 export interface JobPostBrand {
   id: string;
+  slide_id: string;
   post_id: string;
   job_id: string;
   user_id: string;
@@ -79,10 +104,15 @@ export interface JobPost {
   original_caption: string;
   raw_image_url: string;
   rank: number;
+  /** Number of post_slides rows this post has -- 1 for a plain image post,
+   * one per carousel entry otherwise. */
+  slide_count: number;
+  /** LEGACY: pre-carousel-feature posts only. Per-image state (thumbnail,
+   * prompt, transcribed text) now lives on each post_slides row instead --
+   * see lib/types.ts's Slide interface and migration_006_carousel_slides.sql. */
   thumb_path: string | null;
-  image_generation_prompt: string;
-  extracted_text: string;
   refined_caption: string;
+  /** LEGACY: pre-multi-brand posts only -- see job_post_brands. */
   final_image_path: string | null;
   downloaded: boolean;
   status: PostStatus;
@@ -92,9 +122,10 @@ export interface JobPost {
   analyze_completed_at: string | null;
   generate_started_at: string | null;
   generate_completed_at: string | null;
-  /** Real cost of this post's vision (gpt-5) call, in USD. 0 until analysis completes. */
+  /** LEGACY: pre-carousel-feature posts only -- real per-slide vision cost
+   * now lives on each post_slides row, summed by postCostUsd() below. */
   vision_cost_usd: number;
-  /** Real cost of this post's image generation (gpt-image-2) call, in USD. 0 until generation completes. */
+  /** LEGACY: pre-multi-brand posts only -- see job_post_brands.image_cost_usd. */
   image_cost_usd: number;
   /** This post's apportioned share of the job's Apify scrape cost, in USD. */
   apify_cost_usd: number;
@@ -116,6 +147,7 @@ export const IN_FLIGHT: PostStatus[] = [
 
 export const STAGE_LABELS: Record<PostStatus, string> = {
   pending: "Queued",
+  awaiting_slide_selection: "Select slides to keep",
   analyzing: "Analyzing",
   awaiting_confirmation: "Ready for your review",
   queued_for_generation: "Queued for generation",
@@ -168,10 +200,18 @@ export function terminalOffRamp(status: PostStatus): TerminalOffRamp | null {
  *   failed_analysis    branched at step 1 (analyzing)      -- failed mid-analysis
  *   removed            branched at step 2 (awaiting_conf.) -- user removed it there
  *   failed_generation  branched at step 3 (generating)     -- confirmed, then failed
+ *
+ * `awaiting_slide_selection` (carousels only -- see Slide/post_slides) maps
+ * onto the SAME step as `analyzing` rather than getting its own dot: adding
+ * a 6th step to PIPELINE_STEPS would change every plain image post's
+ * stepper too (more dots than before), which the carousel feature is
+ * required not to do. A single-image post's status can never actually BE
+ * awaiting_slide_selection, so this mapping is simply unreachable for it.
  */
 export function stepIndexForStatus(status: PostStatus): number {
   const direct = STEP_INDEX_BY_STATUS[status];
   if (direct !== undefined) return direct;
+  if (status === "awaiting_slide_selection") return 1;
   if (status === "failed_analysis") return 1;
   if (status === "removed") return 2;
   return 3; // failed_generation
@@ -213,18 +253,25 @@ export function isStaleBrandGeneration(brand: JobPostBrand): boolean {
  * tracking". The column itself is left in place, unused, as the lowest-risk
  * way to reverse this later.
  *
- * Image-generation cost now comes from the post's job_post_brands rows
- * (pass whichever ones belong to this post) rather than a single
- * `post.image_cost_usd` column -- a post generated for both brands costs
- * more than one generated for a single brand, and this sums exactly the
- * brand rows that actually exist for it. `post.image_cost_usd` itself is
- * legacy (pre-multi-brand posts only; see migration_004's backfill) and is
- * no longer read here since those posts now have an equivalent
- * job_post_brands row instead.
+ * Both cost components now sum across per-SLIDE rows instead of reading a
+ * single post-level column, since a post can have more than one slide:
+ *
+ *   - vision cost: sum of each checked slide's own vision_cost_usd (0 for
+ *     any slide never analyzed, whether unchecked in stage 2 or still in
+ *     flight) -- pass the post's slides via `slides`.
+ *   - image-generation cost: sum of every job_post_brands row belonging to
+ *     ANY of this post's slides (pass them all via `brands`, filtered by
+ *     post_id -- unaffected by which slide each belongs to).
+ *
+ * `post.vision_cost_usd` / `post.image_cost_usd` are LEGACY (pre-carousel /
+ * pre-multi-brand posts only) and are no longer read here, since those posts
+ * now have an equivalent post_slides / job_post_brands row instead (see
+ * migration_006_carousel_slides.sql's and migration_004's backfills).
  */
-export function postCostUsd(post: JobPost, brands: JobPostBrand[] = []): number {
+export function postCostUsd(post: JobPost, brands: JobPostBrand[] = [], slides: Slide[] = []): number {
   const brandCost = brands.reduce((sum, b) => sum + (b.image_cost_usd || 0), 0);
-  return (post.vision_cost_usd || 0) + brandCost;
+  const visionCost = slides.reduce((sum, s) => sum + (s.vision_cost_usd || 0), 0);
+  return visionCost + brandCost;
 }
 
 /**

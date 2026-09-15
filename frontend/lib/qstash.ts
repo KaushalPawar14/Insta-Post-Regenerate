@@ -37,23 +37,50 @@ export async function enqueueScrape(jobId: string): Promise<void> {
 }
 
 /**
- * Enqueue image generation for exactly one (post, brand) pair. A post
- * confirmed for both brands gets two of these calls -- one per brand --
- * each running independently; the vision/analyze stage never repeats.
+ * Enqueue Agent 2 (vision analysis) for exactly one CHECKED slide.
+ *
+ * Every other place this app publishes "analyze" does so from
+ * backend/scrape_poll.py directly (Python, via _lib/queue.py) -- for a plain
+ * image post going straight from scraping to analysis. This one exists
+ * because a carousel's checked slides are only fanned out to analysis once
+ * the USER hits "Continue to analysis" (see
+ * app/api/jobs/[id]/continue-slides/route.ts), which is a Next.js route,
+ * not a Python stage -- so it needs its own QStash publish from here,
+ * mirroring enqueueGenerate's shape. `retries: 2` matches scrape_poll.py's
+ * own analyze fan-out: analysis is cheap and safely retryable (unlike
+ * generation), so an automatic retry on transient failure is fine here.
+ */
+export async function enqueueAnalyze(slideRowId: string): Promise<void> {
+  await qstash().publishJSON({
+    url: `${baseUrl()}/api/analyze`,
+    body: { slide_row_id: slideRowId },
+    retries: 2,
+    timeout: DESTINATION_TIMEOUT,
+  });
+}
+
+/**
+ * Enqueue image generation for exactly one (slide, brand) pair. A post
+ * confirmed for both brands gets two of these calls per checked slide --
+ * one per brand -- each running independently; the vision/analyze stage
+ * never repeats. Keyed by slide rather than post so a carousel's several
+ * checked slides can each generate independently -- see
+ * migration_006_carousel_slides.sql.
  *
  * `retries: 0` is deliberate. Generation is the only step that costs real
  * money, and a retry after a 300s timeout cannot know whether OpenAI already
  * produced (and billed for) an image. Failing visibly and letting the user
- * press Retry (per-brand) is cheaper and more honest than retrying blind.
+ * press Retry (per-slide, per-brand) is cheaper and more honest than
+ * retrying blind.
  *
  * No `deduplicationId` either: the double-click guard is the atomic status
- * transition in Postgres (scoped to this post+brand), and a dedup id would
+ * transition in Postgres (scoped to this slide+brand), and a dedup id would
  * silently swallow a legitimate Retry of a previously failed brand.
  */
-export async function enqueueGenerate(postRowId: string, brand: string): Promise<void> {
+export async function enqueueGenerate(slideRowId: string, brand: string): Promise<void> {
   await qstash().publishJSON({
     url: `${baseUrl()}/api/generate`,
-    body: { post_row_id: postRowId, brand },
+    body: { slide_row_id: slideRowId, brand },
     retries: 0,
     timeout: DESTINATION_TIMEOUT,
   });

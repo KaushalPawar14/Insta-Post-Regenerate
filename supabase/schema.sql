@@ -74,31 +74,38 @@ create table if not exists public.job_posts (
   raw_image_url           text not null default '',
   rank                    integer not null default 0,
 
-  -- Agent 2 output
-  -- `thumb_path` is TRANSIENT: it holds the original scraped thumbnail only so
-  -- the user can see what they are confirming. It is deleted from Storage the
-  -- moment the generated image exists.
+  -- Number of post_slides rows this post has (1 for a plain image post, one
+  -- per carousel entry otherwise) -- denormalized so the UI can decide
+  -- whether to show slide-nav arrows without loading the slides array first.
+  -- See migration_006_carousel_slides.sql.
+  slide_count             integer not null default 1,
+
+  -- `thumb_path` is LEGACY: pre-carousel-feature posts only. Per-image
+  -- analyzer output (thumbnail, prompt, transcribed text) now lives on
+  -- `post_slides`, since a post can have more than one of each. Kept,
+  -- unused by new code, same treatment as image_cost_usd/final_image_path
+  -- below after the multi-brand migration.
   thumb_path              text,
-  image_generation_prompt text not null default '',
-  extracted_text          text not null default '',
+
   refined_caption         text not null default '',
 
-  -- Agent 3 output
+  -- Agent 3 output. LEGACY: pre-multi-brand posts only -- see job_post_brands.
   final_image_path        text,
 
   downloaded              boolean not null default false,
 
   status                  text not null default 'pending'
-                            check (status in ('pending','analyzing','awaiting_confirmation',
-                                              'queued_for_generation','generating','completed',
-                                              'failed_analysis','failed_generation','removed')),
+                            check (status in ('pending','awaiting_slide_selection','analyzing',
+                                              'awaiting_confirmation','queued_for_generation',
+                                              'generating','completed','failed_analysis',
+                                              'failed_generation','removed')),
   error                   text,
 
-  -- Cost tracking, in USD. vision_cost_usd set when analyze.py completes;
-  -- image_cost_usd set when generate.py completes; apify_cost_usd is this
-  -- post's apportioned share of the job's total scrape cost (see
-  -- jobs.apify_total_cost_usd), set for every post as soon as scraping
-  -- finishes, before analysis even starts.
+  -- Cost tracking, in USD. vision_cost_usd is LEGACY (pre-carousel-feature
+  -- posts only -- real per-slide vision cost now lives on post_slides,
+  -- summed per post the same way job_post_brands.image_cost_usd already is).
+  -- apify_cost_usd is this post's apportioned share of the job's total
+  -- scrape cost, set for every post as soon as scraping finishes.
   vision_cost_usd         numeric not null default 0,
   image_cost_usd          numeric not null default 0,
   apify_cost_usd          numeric not null default 0,
@@ -114,15 +121,73 @@ create table if not exists public.job_posts (
 create index if not exists job_posts_job_idx  on public.job_posts (job_id, rank);
 create index if not exists job_posts_user_idx on public.job_posts (user_id);
 
+-- ------------------------------------------------------------ post_slides --
+-- One row per slide. A plain image post has exactly one (slide_index 0); a
+-- carousel has one per entry in Apify's `images` array, in order. Every
+-- per-image Agent 2 output (prompt, transcribed text, caption candidate,
+-- durable thumbnail, vision cost) lives here instead of on job_posts, since
+-- a post can now have more than one of each. See
+-- migration_006_carousel_slides.sql for the full rationale, including why
+-- `thumb_path` is downloaded eagerly (right after scraping, before the user
+-- ever reviews it) rather than left as a live Instagram CDN link.
+create table if not exists public.post_slides (
+  id                      uuid primary key default gen_random_uuid(),
+  post_id                 uuid not null references public.job_posts (id) on delete cascade,
+  job_id                  uuid not null references public.jobs (id) on delete cascade,
+  user_id                 uuid not null references auth.users (id) on delete cascade,
+
+  slide_index             integer not null,
+  raw_image_url           text not null default '',
+  -- Durable copy in OUR Storage -- created for every multi-slide post's
+  -- slide before the user ever sees stage 2 (prepare_slides.py), or lazily
+  -- by analyze.py the first time a single-image post's one implicit slide
+  -- is analyzed (unchanged from before this feature). Never expires the way
+  -- a raw Instagram CDN link does, which matters both for stage-2 review
+  -- (an arbitrarily long human wait) and for an UNCHECKED slide's original
+  -- image, which must stay displayable in the result forever.
+  thumb_path              text,
+
+  -- The stage-2 checkbox. Defaults CHECKED. Immutable once the post leaves
+  -- awaiting_slide_selection (enforced in the API layer, not here) -- that
+  -- immutability is what makes the caption-promotion rule in
+  -- refresh_post_analysis_status race-safe.
+  include_in_analysis     boolean not null default true,
+
+  status                  text not null default 'pending'
+                            check (status in ('pending','analyzing','analyzed',
+                                              'failed_analysis','skipped')),
+
+  -- Agent 2 output, per slide.
+  image_generation_prompt text not null default '',
+  extracted_text          text not null default '',
+  refined_caption         text not null default '',
+  vision_cost_usd         numeric not null default 0,
+  error                   text,
+
+  analyze_started_at      timestamptz,
+  analyze_completed_at    timestamptz,
+  created_at              timestamptz not null default now(),
+
+  unique (post_id, slide_index)
+);
+
+create index if not exists post_slides_post_idx on public.post_slides (post_id, slide_index);
+create index if not exists post_slides_job_idx  on public.post_slides (job_id);
+create index if not exists post_slides_user_idx on public.post_slides (user_id);
+
 -- ------------------------------------------------------- job_post_brands --
--- One row per (post, brand) generation. A post can have 0, 1, or 2 of these
--- (Facts4Genius, Facts Bytes), each independently claimable/retryable/
--- costed. job_posts.status is a ROLLUP over this table's rows for that post
--- (see backend/_lib/pipeline.py's refresh_post_status) -- it keeps its exact
--- original enum and meaning, so PostStepper/stage-breakdown/ETA needed no
--- changes. See migration_004_multi_brand.sql for the full rationale.
+-- One row per (slide, brand) generation. A slide can have 0, 1, or 2 of
+-- these (Facts4Genius, Facts Bytes), each independently claimable/
+-- retryable/costed. `post_id` stays denormalized alongside the new
+-- `slide_id` on purpose: every post-level rollup query
+-- (backend/_lib/pipeline.py's refresh_post_status, and the History
+-- job-level brand-tag aggregation) already filters by post_id/job_id and
+-- needs ZERO changes to keep working across a post with more than one
+-- slide -- it simply now rolls up more rows per post than before. See
+-- migration_006_carousel_slides.sql for the full rationale.
 create table if not exists public.job_post_brands (
   id                     uuid primary key default gen_random_uuid(),
+  slide_id               uuid not null references public.post_slides (id) on delete cascade,
   post_id                uuid not null references public.job_posts (id) on delete cascade,
   job_id                 uuid not null references public.jobs (id) on delete cascade,
   user_id                uuid not null references auth.users (id) on delete cascade,
@@ -141,12 +206,13 @@ create table if not exists public.job_post_brands (
   generate_completed_at  timestamptz,
   created_at             timestamptz not null default now(),
 
-  unique (post_id, brand)
+  unique (slide_id, brand)
 );
 
-create index if not exists job_post_brands_post_idx on public.job_post_brands (post_id);
-create index if not exists job_post_brands_job_idx  on public.job_post_brands (job_id);
-create index if not exists job_post_brands_user_idx on public.job_post_brands (user_id);
+create index if not exists job_post_brands_slide_idx on public.job_post_brands (slide_id);
+create index if not exists job_post_brands_post_idx  on public.job_post_brands (post_id);
+create index if not exists job_post_brands_job_idx   on public.job_post_brands (job_id);
+create index if not exists job_post_brands_user_idx  on public.job_post_brands (user_id);
 
 -- =========================================================================
 --  Row Level Security
@@ -160,6 +226,7 @@ create index if not exists job_post_brands_user_idx on public.job_post_brands (u
 -- =========================================================================
 alter table public.jobs             enable row level security;
 alter table public.job_posts        enable row level security;
+alter table public.post_slides      enable row level security;
 alter table public.job_post_brands  enable row level security;
 
 drop policy if exists "own jobs: select" on public.jobs;
@@ -192,6 +259,21 @@ create policy "own posts: update" on public.job_posts
 create policy "own posts: delete" on public.job_posts
   for delete to authenticated using (user_id = (select auth.uid()));
 
+drop policy if exists "own slides: select" on public.post_slides;
+drop policy if exists "own slides: insert" on public.post_slides;
+drop policy if exists "own slides: update" on public.post_slides;
+drop policy if exists "own slides: delete" on public.post_slides;
+
+create policy "own slides: select" on public.post_slides
+  for select to authenticated using (user_id = (select auth.uid()));
+create policy "own slides: insert" on public.post_slides
+  for insert to authenticated with check (user_id = (select auth.uid()));
+create policy "own slides: update" on public.post_slides
+  for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy "own slides: delete" on public.post_slides
+  for delete to authenticated using (user_id = (select auth.uid()));
+
 drop policy if exists "own post brands: select" on public.job_post_brands;
 drop policy if exists "own post brands: insert" on public.job_post_brands;
 drop policy if exists "own post brands: update" on public.job_post_brands;
@@ -216,6 +298,7 @@ create policy "own post brands: delete" on public.job_post_brands
 -- =========================================================================
 alter table public.jobs             replica identity full;
 alter table public.job_posts        replica identity full;
+alter table public.post_slides      replica identity full;
 alter table public.job_post_brands  replica identity full;
 
 do $$
@@ -232,6 +315,13 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'job_posts'
   ) then
     alter publication supabase_realtime add table public.job_posts;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'post_slides'
+  ) then
+    alter publication supabase_realtime add table public.post_slides;
   end if;
 
   if not exists (
