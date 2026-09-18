@@ -9,14 +9,10 @@ Two independent checks:
 
 2. WHEN AVAILABLE:
    - If the original pipeline is reachable (pass its path, or set
-     ORIGINAL_PIPELINE_DIR), diff VISION_PROMPT and GENERATOR_PROMPT against
-     the source of truth and assert that VISION_PROMPT is byte-for-byte
-     identical and GENERATOR_PROMPT differs by EXACTLY the two authorised
-     gradient lines.
-   - Always (no external dependency): diff FACTSBYTES_GENERATOR_PROMPT
-     against scripts/factsbytes_prompt_source.txt and assert byte-for-byte
-     identity -- there is no approved edit for this one, so ANY difference
-     is a failure.
+     ORIGINAL_PIPELINE_DIR), diff VISION_PROMPT, GENERATOR_PROMPT, and
+     FACTSBYTES_GENERATOR_PROMPT against their sources and assert each
+     differs by EXACTLY its own approved edit(s) -- see the EXPECTED_*
+     lists below -- and nothing else.
 """
 
 import os
@@ -27,9 +23,34 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backend"))
 
-EXPECTED_ADDITIONS = [
+# VISION_PROMPT: 2 approved additions, appended after its last existing
+# bullet. Nothing removed.
+EXPECTED_VISION_ADDITIONS = [
+    "* Always describe any diagram, hologram, X-ray, or anatomical/mechanical overlay in full detail as an essential part of the scene — never omit or shorten it.",
+    "* Exclude ALL visible text in the scene, not just logos/captions — book titles, signs, labels, screens, clothing text included. Describe such objects by appearance only, never mentioning any words on them.",
+]
+
+# GENERATOR_PROMPT: 2 approved edits -- the gradient addition (pure addition)
+# and the text-color "yellow" -> #f6ff02 swap (one line removed, one added).
+# The thin BORDER line ("Preserve the thin yellow border.") is NOT part of
+# either approved edit and must remain untouched.
+EXPECTED_GENERATOR_REMOVALS = [
+    "* Use only white and yellow text.",
+]
+EXPECTED_GENERATOR_ADDITIONS = [
+    "* Use only white and #f6ff02 text.",
     '* The black gradient overlay must begin exactly at the vertical midpoint of the "INSTAGRAM | FACTS4GENIUS" brand text line, so that the upper half of that text sits above the gradient start and the lower half sits within it.',
     "* Do not begin the gradient any higher or lower than this point.",
+]
+
+# FACTSBYTES_GENERATOR_PROMPT: 1 approved edit -- the text-color bullet's two
+# "yellow" mentions swapped to #f6ff02. The divider LINES bullets are NOT
+# part of this approved edit and must remain untouched.
+EXPECTED_FACTSBYTES_REMOVALS = [
+    "• Use ONLY bright yellow and white text. Highlight important portions in yellow and keep remaining portions white.",
+]
+EXPECTED_FACTSBYTES_ADDITIONS = [
+    "• Use ONLY bright #f6ff02 and white text. Highlight important portions in #f6ff02 and keep remaining portions white.",
 ]
 
 
@@ -73,11 +94,21 @@ def main() -> int:
         print(f"FAIL: {fb_source_path} not found -- cannot verify Facts Bytes prompt fidelity")
         return 1
     fb_source = fb_source_path.read_text(encoding="utf-8")
-    if FACTSBYTES_GENERATOR_PROMPT != fb_source:
+
+    fb_ported_lines = FACTSBYTES_GENERATOR_PROMPT.splitlines()
+    fb_source_lines = fb_source.splitlines()
+    fb_added = [line for line in fb_ported_lines if line not in fb_source_lines]
+    fb_removed = [line for line in fb_source_lines if line not in fb_ported_lines]
+
+    if fb_removed != EXPECTED_FACTSBYTES_REMOVALS or fb_added != EXPECTED_FACTSBYTES_ADDITIONS:
         print("FAIL: FACTSBYTES_GENERATOR_PROMPT differs from scripts/factsbytes_prompt_source.txt")
-        print("      (there is no approved edit for this prompt -- ANY difference is a failure)")
+        print("      by more (or other) than its one approved text-color edit:")
+        for line in fb_removed:
+            print(f"       - {line}")
+        for line in fb_added:
+            print(f"       + {line}")
         return 1
-    print(f"PASS  FACTSBYTES_GENERATOR_PROMPT byte-identical to its source file ({len(FACTSBYTES_GENERATOR_PROMPT)} chars)")
+    print(f"PASS  FACTSBYTES_GENERATOR_PROMPT differs from its source by exactly the 1 approved text-color edit ({len(FACTSBYTES_GENERATOR_PROMPT)} chars)")
 
     # --- check 2b: diff against the original pipeline, if reachable --------
     candidates = []
@@ -104,29 +135,34 @@ def main() -> int:
     src_vision = re.search(r'system_prompt = """(.*?)"""', analyzer, re.DOTALL).group(1)
     src_generator = re.search(r'formatted_prompt = f"""(.*?)"""', generator, re.DOTALL).group(1)
 
-    if VISION_PROMPT != src_vision:
-        print("FAIL: VISION_PROMPT differs from the original source")
+    vision_ported = VISION_PROMPT.splitlines()
+    vision_original = src_vision.splitlines()
+    vision_added = [line.strip() for line in vision_ported if line not in vision_original]
+    vision_removed = [line for line in vision_original if line not in vision_ported]
+
+    if vision_removed or vision_added != EXPECTED_VISION_ADDITIONS:
+        print("FAIL: VISION_PROMPT differs from the original source by more (or other) than its 2 approved additions:")
+        for line in vision_removed:
+            print(f"       - {line}")
+        for line in vision_added:
+            print(f"       + {line}")
         return 1
-    print(f"PASS  VISION_PROMPT byte-identical to source ({len(VISION_PROMPT)} chars)")
+    print(f"PASS  VISION_PROMPT differs from source by exactly the 2 approved additions ({len(VISION_PROMPT)} chars)")
 
     ported = GENERATOR_PROMPT.splitlines()
     original = src_generator.splitlines()
     added = [line for line in ported if line not in original]
     removed = [line for line in original if line not in ported]
 
-    if removed:
-        print(f"FAIL: {len(removed)} line(s) removed from GENERATOR_PROMPT:")
+    if removed != EXPECTED_GENERATOR_REMOVALS or [line.strip() for line in added] != EXPECTED_GENERATOR_ADDITIONS:
+        print("FAIL: GENERATOR_PROMPT differs from the original source by more (or other) than its 2 approved edits:")
         for line in removed:
             print(f"       - {line}")
-        return 1
-
-    if [line.strip() for line in added] != EXPECTED_ADDITIONS:
-        print("FAIL: GENERATOR_PROMPT additions are not the two authorised lines:")
         for line in added:
             print(f"       + {line}")
         return 1
 
-    print("PASS  GENERATOR_PROMPT differs by exactly the 2 authorised gradient lines")
+    print("PASS  GENERATOR_PROMPT differs by exactly the 2 authorised edits (gradient lines + text-color hex)")
     print("\nAll prompt integrity checks passed.")
     return 0
 

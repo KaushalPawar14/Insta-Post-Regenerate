@@ -147,11 +147,15 @@ create table if not exists public.post_slides (
   -- image, which must stay displayable in the result forever.
   thumb_path              text,
 
-  -- The stage-2 checkbox. Defaults CHECKED. Immutable once the post leaves
-  -- awaiting_slide_selection (enforced in the API layer, not here) -- that
-  -- immutability is what makes the caption-promotion rule in
-  -- refresh_post_analysis_status race-safe.
-  include_in_analysis     boolean not null default true,
+  -- The stage-2 selection flag, set via the "Select slides to generate"
+  -- dialog (a batch PATCH of the post's whole selection at once, not a
+  -- per-slide toggle -- see PATCH /api/posts/[id]/slide-selection).
+  -- Defaults UNCHECKED, matching this app's established "no accidental
+  -- spend" convention (the brand checkboxes default unchecked too).
+  -- Immutable once the post leaves awaiting_slide_selection (enforced in
+  -- the API layer, not here) -- that immutability is what makes the
+  -- caption-promotion rule in refresh_post_analysis_status race-safe.
+  include_in_analysis     boolean not null default false,
 
   status                  text not null default 'pending'
                             check (status in ('pending','analyzing','analyzed',

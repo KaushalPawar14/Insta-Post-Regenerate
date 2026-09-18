@@ -25,29 +25,65 @@ The first two were **extracted programmatically** from the original pipeline by
 [`scripts/extract_prompts.py`](scripts/extract_prompts.py) rather than retyped,
 so fidelity is guaranteed rather than assumed.
 
-`VISION_PROMPT` is **byte-for-byte identical** to the original. It now runs
-once per CHECKED slide instead of once per post (see "Carousel / multi-slide
-posts") — a plain image post still runs it exactly once, same as always.
+`VISION_PROMPT` runs once per CHECKED slide instead of once per post (see
+"Carousel / multi-slide posts") — a plain image post still runs it exactly
+once, same as always. It differs from the original by **exactly two
+appended lines**, added after its last existing bullet — nothing earlier in
+the prompt moved or reworded:
 
-`GENERATOR_PROMPT` differs from the original by **exactly two lines** — the one
-authorised edit, appended to the *Image-to-Text Transition* section:
+```
++ * Always describe any diagram, hologram, X-ray, or anatomical/mechanical overlay
+    in full detail as an essential part of the scene -- never omit or shorten it.
++ * Exclude ALL visible text in the scene, not just logos/captions -- book titles,
+    signs, labels, screens, clothing text included. Describe such objects by
+    appearance only, never mentioning any words on them.
+```
+
+The first addition exists because holographic/diagrammatic elements in
+source images were sometimes dropped from the generated image entirely, since
+the description didn't treat them as essential. The second exists because
+incidental text on objects in the scene (a book's title, a sign) was leaking
+into the visual description, causing the image model to render that text —
+which then visually collides with the separately-applied caption text in the
+final generated image.
+
+`GENERATOR_PROMPT` differs from the original by **exactly two authorised
+edits**: the gradient-position lines appended to the *Image-to-Text
+Transition* section, and the text-color instruction's "yellow" changed to
+the exact hex `#f6ff02`:
 
 ```
 + * The black gradient overlay must begin exactly at the vertical midpoint of the
     "INSTAGRAM | FACTS4GENIUS" brand text line, so that the upper half of that text
     sits above the gradient start and the lower half sits within it.
 + * Do not begin the gradient any higher or lower than this point.
+
+- * Use only white and yellow text.
++ * Use only white and #f6ff02 text.
 ```
 
-Nothing else changed: not the border rules, not the branding text, not the
-layout instructions, not the wording of any other sentence.
+The thin **border** ("Preserve the thin yellow border.") is still described
+as plain "yellow" — only the text-color instruction was approved for the hex
+swap. Nothing else changed: not the border rules, not the branding text, not
+the layout instructions, not the wording of any other sentence.
 
 `FACTSBYTES_GENERATOR_PROMPT` has no original pipeline file to extract from —
 it was provided directly and copied verbatim into
 [`scripts/factsbytes_prompt_source.txt`](scripts/factsbytes_prompt_source.txt),
-its own canonical source-of-truth artifact. It has **zero modifications**
-versus that file — there is no approved edit for this one, unlike
-`GENERATOR_PROMPT`'s gradient-position line.
+its own canonical source-of-truth artifact. It now has its **first-ever
+approved edit**, applied the same programmatic way as `GENERATOR_PROMPT`'s:
+the text-color bullet's two "yellow" mentions changed to `#f6ff02`:
+
+```
+- • Use ONLY bright yellow and white text. Highlight important portions in yellow
+    and keep remaining portions white.
++ • Use ONLY bright #f6ff02 and white text. Highlight important portions in
+    #f6ff02 and keep remaining portions white.
+```
+
+The divider **lines** ("Place two thin horizontal yellow lines...") are still
+described as plain "yellow" — only the text-color bullet was approved for the
+hex swap.
 
 The module **self-verifies against embedded SHA-256 checksums at import time**
 for all three prompts, and refuses to load if any is edited. To re-check
@@ -425,9 +461,10 @@ function of the post's type, not of which mode fetched it.
 `post_slides` has one row per slide (`unique(post_id, slide_index)`),
 carrying everything that used to live directly on `job_posts` but can no
 longer be a single value once a post can have several images: the durable
-thumbnail, the stage-2 checkbox (`include_in_analysis`), and each slide's own
-Agent 2 output (`image_generation_prompt`, `extracted_text`, a
-`refined_caption` candidate, `vision_cost_usd`). `job_post_brands` gains
+thumbnail, the stage-2 selection flag (`include_in_analysis`, defaulting
+**unchecked** — see "Selecting slides" below), and each slide's own Agent 2
+output (`image_generation_prompt`, `extracted_text`, a `refined_caption`
+candidate, `vision_cost_usd`). `job_post_brands` gains
 `slide_id` (`unique(slide_id, brand)` replaces `unique(post_id, brand)`) but
 **keeps `post_id` denormalized** — every existing post-level rollup query
 (`refresh_post_status`, the History brand-tag aggregation) still just asks
@@ -467,13 +504,15 @@ scrape_poll.py
                           ▼
              job_posts.status = awaiting_slide_selection
                           │
-        user reviews slides (raw images, checkboxes default CHECKED),
-        toggles are saved immediately (PATCH /api/slides/[id]) --
-        no cost incurred yet beyond the already-sunk scrape
+        "Select slides to generate" dialog -- plain numbered checkboxes
+        (1..N), no images, no per-slide fetch, ALL UNCHECKED by default;
+        the whole selection is submitted in one batch on Confirm
+        (PATCH /api/posts/[id]/slide-selection) -- no cost incurred yet
+        beyond the already-sunk scrape
                           │
         "Continue to analysis" -- ONE batch action across every carousel
         in the job (mirrors Confirm & Generate's own job-level batching,
-        not a per-post button), per-post fine-tuning already done above
+        not a per-post button), per-post selection already done above
                           │
                           ▼
      fan out `analyze` ONLY for checked slides; unchecked slides are
@@ -509,9 +548,19 @@ checked slide has the lowest `slide_index`, computed **only** inside the
 same rollup call that finds every checked slide already terminal — there is
 exactly one such call (made by whichever slide happens to finish last), and
 by then `include_in_analysis` is immutable (enforced in
-`PATCH /api/slides/[id]`, rejected once the post leaves
+`PATCH /api/posts/[id]/slide-selection`, rejected once the post leaves
 `awaiting_slide_selection`), so the "first checked slide" the promotion
 computes can never change out from under it.
+
+**Selecting slides.** `components/SlideSelectDialog.tsx` renders purely from
+slide data already loaded into the job page's state (via `useJob`) — no
+image loading, no navigation, no per-slide fetch, so it opens instantly even
+for a post with many slides. It's a local draft: checking boxes does nothing
+server-side until Confirm, which sends the WHOLE selection in one batch call
+rather than one request per toggle. Every slide starts **unchecked**,
+matching this app's established "no accidental spend" convention (the brand
+checkboxes on Confirm & Generate default unchecked too) — the user opts
+individual slides IN, rather than opting unwanted ones out.
 
 **Display.** `components/SlideNav.tsx` is the arrow-navigation counterpart to
 `BrandToggle` — same self-hides-below-2 convention, same
@@ -544,7 +593,7 @@ summation pattern `job_post_brands` already established, one level deeper.
 | — | real per-post/per-job cost in ₹ INR (OpenAI only) | `with_structured_output(..., include_raw=True)` and `ImagesResponse.usage` expose real token counts; Apify excluded entirely (free credits) |
 | single branded template | `job_post_brands` table, Facts4Genius + Facts Bytes | A post can be generated in either or both formats, reusing one Analyzer output |
 | one image per post | `post_slides` table, carousel-aware | A post can have several slides, each independently reviewed, analyzed, and generated |
-| — | `awaiting_slide_selection` status + stage-2 review | New pre-analysis gate for carousels only -- raw slides, checkbox per slide, zero AI cost until Continue |
+| — | `awaiting_slide_selection` status + stage-2 review | New pre-analysis gate for carousels only -- instant numbered-checkbox dialog, zero AI cost until Continue |
 
 **Dependencies dropped:**
 

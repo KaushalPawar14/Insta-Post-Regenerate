@@ -3,24 +3,40 @@ Extracts the three protected prompts byte-for-byte from their sources and
 emits `backend/_lib/prompts.py` for the new project.
 
 Two of the three (VISION_PROMPT, GENERATOR_PROMPT) come from the original
-pipeline's source files. The ONLY modification applied to either is the
-single approved edit to GENERATOR_PROMPT: two bullets appended to the
-"Image-to-Text Transition" section that pin the black gradient overlay's
-start to the vertical midpoint of the "INSTAGRAM | FACTS4GENIUS" brand text
-line. Nothing else in either is altered.
+pipeline's source files. Each has a small number of individually-approved
+edits applied programmatically here (never by hand-editing the source or
+the emitted module) -- see the ANCHOR/ADDITION pairs below for the exact
+text of each one:
+
+  VISION_PROMPT (2 approved edits, appended to the end -- nothing else
+  altered): a "diagram fidelity" bullet (never omit/shorten a diagram,
+  hologram, X-ray, or anatomical/mechanical overlay) and a "text exclusion"
+  bullet (exclude ALL visible text in the scene, not just logos/captions).
+
+  GENERATOR_PROMPT (2 approved edits): two bullets appended to the
+  "Image-to-Text Transition" section pinning the black gradient overlay's
+  start to the vertical midpoint of the "INSTAGRAM | FACTS4GENIUS" brand
+  text line; and the text-color instruction's "yellow" changed to the exact
+  hex #f6ff02 ("Use only white and yellow text." -> "...and #f6ff02
+  text."). The thin BORDER stays described as plain "yellow" -- only the
+  text-color instruction was approved for the hex swap.
+
+Nothing else in either is altered.
 
 The third (FACTSBYTES_GENERATOR_PROMPT) is the Facts Bytes brand's
 image-generation prompt, provided directly by the project owner rather than
 extracted from an existing pipeline file. It has no "original source .py" to
 diff against, so its canonical source-of-truth artifact is instead
 `scripts/factsbytes_prompt_source.txt` -- copied verbatim from what was
-provided, byte for byte, with ZERO modifications of any kind (unlike
-GENERATOR_PROMPT, there is no approved edit for this one). This script reads
-that file and copies it into prompts.py unmodified.
+provided. It now has its own first approved edit, applied the same
+programmatic way as GENERATOR_PROMPT's: the text-color instruction's
+"yellow" changed to #f6ff02 (both occurrences in that one bullet -- the base
+rule and the "highlight in yellow" clause both describe the same text
+color). The divider LINES stay described as plain "yellow" -- only the
+text-color bullet was approved for the hex swap.
 
-A hash check at the end proves the vision prompt is untouched, the generator
-prompt differs from its source ONLY by the two inserted lines, and the Facts
-Bytes prompt is byte-identical to its own source file.
+A hash check at the end proves each prompt differs from its source by
+EXACTLY its approved edit(s) and nothing else.
 """
 
 import hashlib
@@ -39,7 +55,39 @@ generator_src = (SRC / "nodes" / "agent_3_generator.py").read_text(encoding="utf
 m = re.search(r'system_prompt = """(.*?)"""', analyzer_src, re.DOTALL)
 if not m:
     sys.exit("FATAL: could not locate system_prompt in agent_2_analyzer.py")
-VISION_PROMPT = m.group(1)
+VISION_PROMPT_RAW = m.group(1)
+
+# ------------------------------------------- the 2 approved vision edits
+# Appended to the very end of the prompt (after its last existing bullet),
+# in the same "* " style already used throughout -- nothing else in the
+# prompt is touched. Diagram fidelity: holographic/diagrammatic elements in
+# source images were sometimes dropped from the generated image because the
+# description didn't treat them as essential. Text exclusion: incidental
+# text on objects in the scene (e.g. a book's title) was leaking into the
+# visual description, causing the image model to render that text, which
+# then visually collides with the separately-applied caption text.
+VISION_ANCHOR = "        * Smartly get to know the watermark or the name of the company, then don't include it in the text 2 which includes text.\n"
+VISION_ADDITION = (
+    "        * Always describe any diagram, hologram, X-ray, or anatomical/mechanical overlay in full detail as an essential part of the scene — never omit or shorten it.\n"
+    "        * Exclude ALL visible text in the scene, not just logos/captions — book titles, signs, labels, screens, clothing text included. Describe such objects by appearance only, never mentioning any words on them.\n"
+)
+
+if VISION_PROMPT_RAW.count(VISION_ANCHOR) != 1:
+    sys.exit(
+        f"FATAL: vision prompt anchor found {VISION_PROMPT_RAW.count(VISION_ANCHOR)} times; expected exactly 1"
+    )
+
+VISION_PROMPT = VISION_PROMPT_RAW.replace(VISION_ANCHOR, VISION_ANCHOR + VISION_ADDITION)
+
+vision_before = VISION_PROMPT_RAW.splitlines(keepends=True)
+vision_after = VISION_PROMPT.splitlines(keepends=True)
+vision_added = [ln for ln in vision_after if ln not in vision_before]
+vision_removed = [ln for ln in vision_before if ln not in vision_after]
+if vision_removed or vision_added != VISION_ADDITION.splitlines(keepends=True):
+    sys.exit(
+        f"FATAL: VISION_PROMPT diff is not exactly the 2 approved lines. "
+        f"added={vision_added} removed={vision_removed}"
+    )
 
 # ------------------------------------------------------------- generator prompt
 # In agent_3_generator.py:  formatted_prompt = f""" ... """
@@ -56,33 +104,77 @@ expected = {"visual_prompt", "text_transcription"}
 if brace_tokens != expected:
     sys.exit(f"FATAL: unexpected brace tokens in generator prompt: {brace_tokens}")
 
-# ------------------------------------------------- the ONE approved edit
-ANCHOR = "* Avoid any visible hard edges, sharp cutoffs, or unpolished image boundaries.\n"
-ADDITION = (
+# ------------------------------------------------- approved edit 1: gradient
+GRADIENT_ANCHOR = "* Avoid any visible hard edges, sharp cutoffs, or unpolished image boundaries.\n"
+GRADIENT_ADDITION = (
     '* The black gradient overlay must begin exactly at the vertical midpoint of the "INSTAGRAM | FACTS4GENIUS" brand text line, so that the upper half of that text sits above the gradient start and the lower half sits within it.\n'
     "* Do not begin the gradient any higher or lower than this point.\n"
 )
 
-if GENERATOR_PROMPT_RAW.count(ANCHOR) != 1:
+if GENERATOR_PROMPT_RAW.count(GRADIENT_ANCHOR) != 1:
     sys.exit(
-        f"FATAL: anchor line found {GENERATOR_PROMPT_RAW.count(ANCHOR)} times; expected exactly 1"
+        f"FATAL: gradient anchor line found {GENERATOR_PROMPT_RAW.count(GRADIENT_ANCHOR)} times; expected exactly 1"
     )
 
-GENERATOR_PROMPT = GENERATOR_PROMPT_RAW.replace(ANCHOR, ANCHOR + ADDITION)
+_generator_with_gradient = GENERATOR_PROMPT_RAW.replace(GRADIENT_ANCHOR, GRADIENT_ANCHOR + GRADIENT_ADDITION)
+
+# --------------------------------------- approved edit 2: yellow text -> hex
+# Only the TEXT-COLOR instruction gets the hex swap -- the thin BORDER stays
+# described as plain "yellow" (confirmed with the project owner which of the
+# two distinct "yellow" mentions this edit targets).
+YELLOW_TEXT_ANCHOR = "* Use only white and yellow text.\n"
+YELLOW_TEXT_ADDITION = "* Use only white and #f6ff02 text.\n"
+
+if _generator_with_gradient.count(YELLOW_TEXT_ANCHOR) != 1:
+    sys.exit(
+        f"FATAL: yellow-text anchor line found {_generator_with_gradient.count(YELLOW_TEXT_ANCHOR)} times; expected exactly 1"
+    )
+
+GENERATOR_PROMPT = _generator_with_gradient.replace(YELLOW_TEXT_ANCHOR, YELLOW_TEXT_ADDITION)
 
 # ------------------------------------------------------------------ verify diff
 before = GENERATOR_PROMPT_RAW.splitlines(keepends=True)
 after = GENERATOR_PROMPT.splitlines(keepends=True)
 added = [ln for ln in after if ln not in before]
 removed = [ln for ln in before if ln not in after]
-if len(after) - len(before) != 2 or removed:
-    sys.exit(f"FATAL: diff is not exactly +2/-0. added={len(added)} removed={len(removed)}")
+expected_added = [YELLOW_TEXT_ADDITION] + GRADIENT_ADDITION.splitlines(keepends=True)
+expected_removed = [YELLOW_TEXT_ANCHOR]
+if added != expected_added or removed != expected_removed:
+    sys.exit(
+        f"FATAL: GENERATOR_PROMPT diff is not exactly the 2 approved edits. "
+        f"added={added} removed={removed}"
+    )
 
 # ------------------------------------------------------- Facts Bytes prompt
 FACTSBYTES_SOURCE_PATH = DEST / "scripts" / "factsbytes_prompt_source.txt"
 if not FACTSBYTES_SOURCE_PATH.exists():
     sys.exit(f"FATAL: {FACTSBYTES_SOURCE_PATH} not found.")
-FACTSBYTES_GENERATOR_PROMPT = FACTSBYTES_SOURCE_PATH.read_text(encoding="utf-8")
+FACTSBYTES_PROMPT_RAW = FACTSBYTES_SOURCE_PATH.read_text(encoding="utf-8")
+
+# --------------------------------------- approved edit: yellow text -> hex
+# Facts Bytes' first-ever approved edit. Only the TEXT-COLOR bullet gets the
+# hex swap (both "yellow" mentions in it -- the base rule and the "highlight
+# in yellow" clause both describe the same text color); the divider LINES
+# stay described as plain "yellow".
+FB_YELLOW_TEXT_ANCHOR = "• Use ONLY bright yellow and white text. Highlight important portions in yellow and keep remaining portions white.\n"
+FB_YELLOW_TEXT_ADDITION = "• Use ONLY bright #f6ff02 and white text. Highlight important portions in #f6ff02 and keep remaining portions white.\n"
+
+if FACTSBYTES_PROMPT_RAW.count(FB_YELLOW_TEXT_ANCHOR) != 1:
+    sys.exit(
+        f"FATAL: Facts Bytes yellow-text anchor found {FACTSBYTES_PROMPT_RAW.count(FB_YELLOW_TEXT_ANCHOR)} times; expected exactly 1"
+    )
+
+FACTSBYTES_GENERATOR_PROMPT = FACTSBYTES_PROMPT_RAW.replace(FB_YELLOW_TEXT_ANCHOR, FB_YELLOW_TEXT_ADDITION)
+
+fb_before = FACTSBYTES_PROMPT_RAW.splitlines(keepends=True)
+fb_after = FACTSBYTES_GENERATOR_PROMPT.splitlines(keepends=True)
+fb_added = [ln for ln in fb_after if ln not in fb_before]
+fb_removed = [ln for ln in fb_before if ln not in fb_after]
+if fb_added != [FB_YELLOW_TEXT_ADDITION] or fb_removed != [FB_YELLOW_TEXT_ANCHOR]:
+    sys.exit(
+        f"FATAL: FACTSBYTES_GENERATOR_PROMPT diff is not exactly the 1 approved edit. "
+        f"added={fb_added} removed={fb_removed}"
+    )
 
 fb_brace_tokens = set(re.findall(r"\{([^}]*)\}", FACTSBYTES_GENERATOR_PROMPT))
 if fb_brace_tokens:
@@ -100,12 +192,24 @@ if FACTSBYTES_GENERATOR_PROMPT.count(FB_TOKEN_1) != 1 or FACTSBYTES_GENERATOR_PR
     )
 
 print("=== VERIFICATION ===")
-print(f"vision prompt        : {len(VISION_PROMPT)} chars, sha256={hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:16]}")
+print(f"vision prompt (source): {len(VISION_PROMPT_RAW)} chars, sha256={hashlib.sha256(VISION_PROMPT_RAW.encode()).hexdigest()[:16]}")
+print(f"vision prompt (ported): {len(VISION_PROMPT)} chars  (+2 lines, -0 lines)")
 print(f"generator (source)   : {len(GENERATOR_PROMPT_RAW)} chars, sha256={hashlib.sha256(GENERATOR_PROMPT_RAW.encode()).hexdigest()[:16]}")
-print(f"generator (ported)   : {len(GENERATOR_PROMPT)} chars  (+{len(GENERATOR_PROMPT) - len(GENERATOR_PROMPT_RAW)} chars, +2 lines, -0 lines)")
-print(f"facts bytes generator: {len(FACTSBYTES_GENERATOR_PROMPT)} chars, sha256={hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest()[:16]} (byte-identical to source, zero edits)")
-print("\nLines added to GENERATOR_PROMPT (the one approved edit):")
+print(f"generator (ported)   : {len(GENERATOR_PROMPT)} chars  (+{len(GENERATOR_PROMPT) - len(GENERATOR_PROMPT_RAW)} chars, +3 lines, -1 line)")
+print(f"facts bytes (source) : {len(FACTSBYTES_PROMPT_RAW)} chars, sha256={hashlib.sha256(FACTSBYTES_PROMPT_RAW.encode()).hexdigest()[:16]}")
+print(f"facts bytes (ported) : {len(FACTSBYTES_GENERATOR_PROMPT)} chars  (+1 line, -1 line)")
+print("\nLines added to VISION_PROMPT (the 2 approved edits):")
+for ln in vision_added:
+    print("  + " + ln.rstrip("\n"))
+print("\nLines added/removed in GENERATOR_PROMPT (the 2 approved edits):")
+for ln in removed:
+    print("  - " + ln.rstrip("\n"))
 for ln in added:
+    print("  + " + ln.rstrip("\n"))
+print("\nLines added/removed in FACTSBYTES_GENERATOR_PROMPT (the 1 approved edit):")
+for ln in fb_removed:
+    print("  - " + ln.rstrip("\n"))
+for ln in fb_added:
     print("  + " + ln.rstrip("\n"))
 
 # ------------------------------------------------------------------ emit module
@@ -116,19 +220,31 @@ These three prompts are the core IP of this project. They were extracted
 byte-for-byte by a script (scripts/extract_prompts.py) rather than retyped,
 to guarantee fidelity:
 
-  VISION_PROMPT               <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim)
+  VISION_PROMPT               <- nodes/agent_2_analyzer.py  :: system_prompt   (verbatim + approved edits)
   GENERATOR_PROMPT             <- nodes/agent_3_generator.py :: formatted_prompt
-  FACTSBYTES_GENERATOR_PROMPT <- scripts/factsbytes_prompt_source.txt          (verbatim)
+  FACTSBYTES_GENERATOR_PROMPT <- scripts/factsbytes_prompt_source.txt          (verbatim + approved edit)
 
-GENERATOR_PROMPT contains exactly ONE authorised modification versus its
+VISION_PROMPT contains exactly TWO authorised additions versus its source,
+both appended after its last existing bullet (nothing else moved or
+reworded): a "diagram fidelity" bullet (never omit or shorten a diagram,
+hologram, X-ray, or anatomical/mechanical overlay) and a "text exclusion"
+bullet (exclude ALL visible text in the scene, not just logos/captions).
+
+GENERATOR_PROMPT contains exactly TWO authorised modifications versus its
 source: two bullets appended to the "Image-to-Text Transition" section pinning
 the black gradient overlay's start to the vertical midpoint of the
-"INSTAGRAM | FACTS4GENIUS" brand text line. Nothing else differs -- not the
-border rules, not the branding text, not the layout instructions, not the
-wording of any other sentence.
+"INSTAGRAM | FACTS4GENIUS" brand text line; and the text-color instruction's
+"yellow" changed to the exact hex #f6ff02. The thin BORDER is still described
+as plain "yellow" -- only the text-color instruction was approved for the hex
+swap. Nothing else differs -- not the border rules, not the branding text,
+not the layout instructions, not the wording of any other sentence.
 
-FACTSBYTES_GENERATOR_PROMPT has ZERO modifications versus its source -- no
-approved edit exists for this one. It is copied character for character.
+FACTSBYTES_GENERATOR_PROMPT contains exactly ONE authorised modification
+versus its source -- its first ever: the text-color bullet's two "yellow"
+mentions changed to #f6ff02 (the base rule and the "highlight in yellow"
+clause both describe the same text color). The divider LINES are still
+described as plain "yellow" -- only the text-color bullet was approved for
+the hex swap.
 
 Do not rewrite, reformat, shorten, "improve", or reinterpret any of the three.
 Integrity is enforced at import time by the checksums below; if you change a

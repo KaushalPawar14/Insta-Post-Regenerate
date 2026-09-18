@@ -22,6 +22,7 @@ import {
 import PostStepper from "./PostStepper";
 import BrandToggle from "./BrandToggle";
 import SlideNav from "./SlideNav";
+import SlideSelectDialog from "./SlideSelectDialog";
 
 const BADGE_CLASS: Record<JobPost["status"], string> = {
   pending: "badge-idle",
@@ -54,6 +55,7 @@ export default function PostCard({
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<Brand | null>(null);
   const [selectedSlideIndex, setSelectedSlideIndex] = useState(0);
+  const [showSlideDialog, setShowSlideDialog] = useState(false);
 
   const removed = post.status === "removed";
   const selectingSlides = post.status === "awaiting_slide_selection";
@@ -146,24 +148,6 @@ export default function PostCard({
       body: JSON.stringify({ brand }),
     });
   };
-
-  async function toggleSlideIncluded(slide: Slide) {
-    setBusy("slide-" + slide.id);
-    setError(null);
-    try {
-      const response = await authedFetch(`/api/slides/${slide.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ include_in_analysis: !slide.include_in_analysis }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "Could not update this slide.");
-      onChanged();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
 
   async function saveCaption() {
     const ok = await call("save", `/api/posts/${post.id}/caption`, {
@@ -338,6 +322,7 @@ export default function PostCard({
   }
 
   return (
+    <>
     <article className={`post ${removed ? "post-removed" : ""}`}>
       <div
         className={`post-media ${
@@ -347,9 +332,13 @@ export default function PostCard({
         {removed ? (
           <div className="media-placeholder">Excluded from generation</div>
         ) : selectingSlides ? (
-          <SlideNav count={sortedSlides.length} selectedIndex={selectedSlideIndex} onSelect={setSelectedSlideIndex}>
+          // Static preview only -- no arrows, no per-slide fetch. Choosing
+          // WHICH slides to generate happens in the instant, numbers-only
+          // SlideSelectDialog below, not by browsing images here.
+          <div className="slide-nav">
             {renderStageMedia()}
-          </SlideNav>
+            {sortedSlides.length > 1 && <div className="slide-nav-count">{sortedSlides.length} slides</div>}
+          </div>
         ) : !confirmed ? (
           thumbUrl ? (
             <>
@@ -413,21 +402,18 @@ export default function PostCard({
         {selectingSlides ? (
           <>
             <p className="sub" style={{ margin: 0 }}>
-              This post has {sortedSlides.length} slides. Uncheck any you don&apos;t want analyzed or
-              generated — unchecked slides cost nothing and keep their original image in the result.
+              This post has {sortedSlides.length} slides. Pick which ones to analyze and generate —
+              unchecked slides cost nothing and keep their original image in the result.
             </p>
-            {currentSlide && (
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={currentSlide.include_in_analysis}
-                  onChange={() => toggleSlideIncluded(currentSlide)}
-                  disabled={busy !== null}
-                />
-                Include slide {currentSlide.slide_index + 1} in analysis
-              </label>
-            )}
             <div className="post-actions">
+              <button
+                className="btn-primary btn-sm"
+                onClick={() => setShowSlideDialog(true)}
+                disabled={busy !== null}
+              >
+                Select slides to generate ({sortedSlides.filter((s) => s.include_in_analysis).length} of{" "}
+                {sortedSlides.length} selected)
+              </button>
               <button className="btn-danger btn-sm" onClick={remove} disabled={busy !== null}>
                 {busy === "remove" ? "Removing..." : "Remove"}
               </button>
@@ -547,5 +533,14 @@ export default function PostCard({
         )}
       </div>
     </article>
+    {showSlideDialog && (
+      <SlideSelectDialog
+        postId={post.id}
+        slides={sortedSlides}
+        onClose={() => setShowSlideDialog(false)}
+        onSaved={onChanged}
+      />
+    )}
+    </>
   );
 }

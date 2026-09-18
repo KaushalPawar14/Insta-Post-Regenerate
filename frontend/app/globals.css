@@ -895,6 +895,54 @@ button:not(:disabled):hover {
   border-radius: 99px;
 }
 
+/* ------------------------------------------------ slide-select dialog -----
+   The "Select slides to generate" modal (SlideSelectDialog.tsx) -- plain
+   numbered checkboxes, no images, so it renders instantly. */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+.dialog-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.slide-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.slide-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.slide-select-item:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(240, 180, 41, 0.1);
+  color: var(--accent);
+}
+
 /* =========================================================================
    MOBILE (≈360px–640px). Desktop styling above this block is untouched --
    every rule here either lives inside this query or a narrower one nested
