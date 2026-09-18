@@ -19,6 +19,7 @@ immediately before that step, guarantees it runs at most once per job.
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +47,25 @@ POLL_DELAY = "15s"
 TERMINAL_FAILURE_STATES = {"FAILED", "ABORTED", "TIMED-OUT", "TIMING-OUT"}
 IN_PROGRESS_STATES = {"READY", "RUNNING", "ABORTING"}
 
+# Apify/Instagram's known "can't return full post data" fallback shape --
+# confirmed against a real sample before writing any of this (see
+# normalise_item's docstring). Any OTHER value in an item's `error` field is
+# unrecognised: still attempted via the same fallback extraction (a fallback
+# `image` + `description` is the best available signal either way), but
+# logged rather than silently treated as identical to this one.
+RESTRICTED_ERROR_VALUE = "restricted_page"
+
+# Matches the shortcode out of a permalink like
+# "https://www.instagram.com/p/DdT2IZYCM62/" (also "/reel/" and "/tv/").
+_SHORTCODE_RE = re.compile(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
+
+# Matches Instagram's own auto-generated restricted-page description shape:
+# `<username> on <date>: "<caption>".` (confirmed against a real sample --
+# see normalise_item's docstring). DOTALL so the caption's own newlines
+# don't stop the match; the capture group is greedy so it extends to the
+# LAST quote in the string even if the caption itself contains one.
+_RESTRICTED_CAPTION_RE = re.compile(r'^.*?:\s*"(.*)"\.?\s*$', re.DOTALL)
+
 
 def _first(item: Dict[str, Any], *keys: str) -> Optional[Any]:
     """Return the first key present with a truthy value."""
@@ -54,6 +74,28 @@ def _first(item: Dict[str, Any], *keys: str) -> Optional[Any]:
         if value:
             return value
     return None
+
+
+def _shortcode_from_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    match = _SHORTCODE_RE.search(url)
+    return match.group(1) if match else None
+
+
+def _extract_restricted_caption(description: str) -> str:
+    """
+    Pull just the quoted caption text out of Instagram's auto-generated
+    restricted-page description, e.g. from
+    `k4knowledge on September 15, 2026: "✨ The Secret Meaning..."` extract
+    `✨ The Secret Meaning...`. Falls back to the raw description if the
+    pattern doesn't match cleanly, rather than failing -- some restricted
+    responses may not follow this exact shape.
+    """
+    if not description:
+        return ""
+    match = _RESTRICTED_CAPTION_RE.match(description)
+    return match.group(1) if match else description
 
 
 def _slide_urls(item: Dict[str, Any], thumbnail: str) -> List[str]:
@@ -90,22 +132,66 @@ def normalise_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     against a live run; if the actor names a field differently there, this
     degrades instead of producing an empty post.
 
-    Returns None for items that are not usable posts -- the actor can emit
-    profile/detail objects alongside posts, and a post with no image is
-    useless to the Analyzer.
+    RESTRICTED FALLBACK: for some posts, Instagram/Apify can't return the
+    normal shape at all and instead returns a restricted-page fallback --
+    recognisable by an `error` field and the absence of every normal field
+    (`type`, `images`, `likesCount`, `id`, ...). Confirmed against a real
+    sample before writing this:
+
+        {"error": "restricted_page", "errorDescription": "...",
+         "image": "<one fallback photo url>",
+         "description": "<username> on <date>: \\"<caption>\\".",
+         "media_id": "<numeric id>", "shared_entity_id": "<same numeric id>",
+         "url": "https://www.instagram.com/p/<shortcode>/", ...}
+
+    Only `image` and `description` carry anything usable -- there is no
+    `likesCount`/`commentsCount` at all (both default to 0 via the same
+    fallback logic below that already handles them being merely absent on a
+    normal item, not a new code path) and no reliable multi-image signal, so
+    this always becomes a single-slide post via the same `_slide_urls` call
+    every other item goes through (it only treats an item as a carousel when
+    `type == "Sidecar"`, which a restricted item never has). This is handled
+    entirely HERE, in the one place both profile-scrape and single-post-URL
+    jobs already share for normalising a raw Apify item -- see `_slide_urls`'s
+    docstring for why that sharing holds.
+
+    Returns None for items that are not usable posts at all (no image by any
+    means) -- the actor can emit profile/detail objects alongside posts, and
+    a post with no image is useless to the Analyzer.
     """
-    thumbnail = _first(item, "displayUrl", "thumbnailUrl", "imageUrl", "displayUrlOriginal")
-    if not thumbnail:
-        images = item.get("images")
-        if isinstance(images, list) and images:
-            first_image = images[0]
-            thumbnail = first_image if isinstance(first_image, str) else (
-                first_image.get("url") if isinstance(first_image, dict) else None
+    restricted_caption: Optional[str] = None
+    error = item.get("error")
+    if error:
+        if error != RESTRICTED_ERROR_VALUE:
+            print(
+                f"[scrape_poll] unrecognised Apify 'error' field {error!r} on an item "
+                "(expected 'restricted_page') -- attempting the same fallback "
+                "image/description extraction anyway, since that's the best "
+                "signal available either way."
             )
+        thumbnail = item.get("image")
+        restricted_caption = _extract_restricted_caption(item.get("description") or "")
+    else:
+        thumbnail = _first(item, "displayUrl", "thumbnailUrl", "imageUrl", "displayUrlOriginal")
+        if not thumbnail:
+            images = item.get("images")
+            if isinstance(images, list) and images:
+                first_image = images[0]
+                thumbnail = first_image if isinstance(first_image, str) else (
+                    first_image.get("url") if isinstance(first_image, dict) else None
+                )
     if not thumbnail:
         return None
 
-    post_id = _first(item, "id", "shortCode", "shortcode", "postId") or "unknown_id"
+    # `media_id`/`shared_entity_id` and the permalink's own shortcode are
+    # extra fallbacks that only ever matter for a restricted item -- every
+    # normal item already has `id` (confirmed against real samples), so this
+    # extension is a no-op for the non-restricted path.
+    post_id = (
+        _first(item, "id", "shortCode", "shortcode", "postId", "media_id", "shared_entity_id")
+        or _shortcode_from_url(item.get("url"))
+        or "unknown_id"
+    )
 
     likes = item.get("likesCount")
     if likes is None:
@@ -131,11 +217,13 @@ def normalise_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if comments < 0:
         comments = 0
 
+    caption = restricted_caption if restricted_caption is not None else (item.get("caption") or "")
+
     return {
         "id": str(post_id),
         "likes": likes,
         "comments": comments,
-        "caption": item.get("caption") or "",
+        "caption": caption,
         "thumbnail_url": str(thumbnail),
         "slide_urls": _slide_urls(item, str(thumbnail)),
     }
