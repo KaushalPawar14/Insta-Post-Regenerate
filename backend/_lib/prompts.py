@@ -79,3 +79,4 @@ if hashlib.sha256(GENERATOR_PROMPT.encode()).hexdigest() != _GENERATOR_SHA256:
     raise RuntimeError("GENERATOR_PROMPT has been modified -- this prompt is protected IP.")
 if hashlib.sha256(FACTSBYTES_GENERATOR_PROMPT.encode()).hexdigest() != _FACTSBYTES_SHA256:
     raise RuntimeError("FACTSBYTES_GENERATOR_PROMPT has been modified -- this prompt is protected IP.")
+# Testing needed
