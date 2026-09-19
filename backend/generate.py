@@ -7,10 +7,14 @@ one slide's generation call.
 Ported from `nodes/agent_3_generator.py`. The OpenAI call itself is unchanged
 apart from one addition carried over from before multi-brand: `quality` is
 passed explicitly (default `medium`). Rationale -- Vercel's Hobby plan
-enforces a HARD 300s function ceiling, and gpt-image-2 at 1024x1536 with
-quality left at `auto` has been benchmarked at roughly 195s median / 280s
-worst case. `medium` keeps generation comfortably inside the limit and makes
-cost predictable. Override with IMAGE_QUALITY.
+enforces a HARD 300s function ceiling, and gpt-image-2 at the legacy
+1024x1536 size with quality left at `auto` was benchmarked at roughly 195s
+median / 280s worst case. `medium` keeps generation comfortably inside the
+limit and makes cost predictable. Override with IMAGE_QUALITY. (The active
+1088x1360 size, see USE_LEGACY_1024x1536_STRETCH below, has ~6% fewer total
+pixels than 1024x1536 and is expected to generate at least as fast, but was
+not separately re-benchmarked -- worth confirming against real generation
+times once live.)
 
 Each brand has its own protected prompt (`_lib/prompts.py`) and its own
 reference template (`_lib/assets/`), selected by the `brand` field in this
@@ -64,6 +68,41 @@ REFERENCE_PATHS = {
     Brand.FACTS4GENIUS: os.path.join(_ASSETS_DIR, "reference_format.png"),
     Brand.FACTSBYTES: os.path.join(_ASSETS_DIR, "reference_format_factsbytes.png"),
 }
+
+# --- IMAGE SIZE CONFIGURATION -----------------------------------------------
+# 2026-09-19: switched from native 1024x1536 (2:3) + a non-uniform stretch to
+# native 1088x1360 -- an EXACT 4:5 match for Instagram's 1080x1350 delivery
+# ratio (1360/1088 == 1350/1080 == 1.25). Both dimensions are multiples of 16
+# and the ratio is within gpt-image-2's documented 1:3-3:1 range (confirmed
+# against OpenAI's own API reference, not a third party). This removes the
+# stretch distortion with zero cropping and zero padding -- verified against
+# 8 real generations across both brands (varied source photos, caption
+# lengths 25-326 chars). Real measured cost: ~$0.063/image vs. the old
+# ~$0.058/image (~9% higher, confirmed via this app's own cost tracking on
+# real API responses -- not an assumption).
+#
+# TO REVERT to the previous (pre-2026-09-19) behavior: change ONLY the line
+# below to True. Every affected call in this file (the reference pre-stretch,
+# the images.edit size parameter, and the final resize's effective behavior)
+# branches on this single flag -- nothing else needs to change.
+USE_LEGACY_1024x1536_STRETCH = False
+
+if USE_LEGACY_1024x1536_STRETCH:
+    # --- PREVIOUS CONFIGURATION (pre-2026-09-19), kept working as an -------
+    # --- instant rollback path, not dead code ------------------------------
+    # Native 1024x1536 (2:3) does not match the 1080x1350 (4:5) delivery
+    # ratio, so the final resize below performs a non-uniform stretch
+    # (visible as mild horizontal distortion). This was the app's original,
+    # long-running behavior before the aspect-ratio investigation.
+    _API_SIZE = "1024x1536"
+    _API_CANVAS = (1024, 1536)
+else:
+    # --- CURRENT CONFIGURATION (active) ------------------------------------
+    # Native 1088x1360 already matches the delivery ratio exactly, so the
+    # final resize below is a plain proportional downscale: zero crop, zero
+    # stretch, zero padding.
+    _API_SIZE = "1088x1360"
+    _API_CANVAS = (1088, 1360)
 
 
 def _render_prompt(brand: str, visual_prompt: str, text_transcription: str) -> str:
@@ -150,8 +189,9 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         # --- SMART PRE-PROCESSING: Stretch to fit API naturally ------------
         original_ref = Image.open(reference_path).convert("RGB")
 
-        # Stretch directly to 1024x1536 so there is ZERO black padding
-        api_canvas = original_ref.resize((1024, 1536), Image.Resampling.LANCZOS)
+        # Stretch directly to the API canvas size so there is ZERO black
+        # padding. Size comes from USE_LEGACY_1024x1536_STRETCH above.
+        api_canvas = original_ref.resize(_API_CANVAS, Image.Resampling.LANCZOS)
 
         ref_buffer = BytesIO()
         api_canvas.save(ref_buffer, "PNG")
@@ -166,7 +206,7 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
             image=ref_buffer,
             prompt=formatted_prompt,
             n=1,
-            size="1024x1536",
+            size=_API_SIZE,
             quality=config.image_quality(),
         )
 
@@ -192,10 +232,16 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         else:
             raise ValueError("Could not extract image from the response.")
 
-        # --- SMART POST-PROCESSING: Squeeze back to perfect Instagram ratio -
+        # --- SMART POST-PROCESSING: perfect Instagram ratio -----------------
         generated_img = Image.open(BytesIO(img_data)).convert("RGB")
 
-        # Since we didn't add padding, we don't crop! Just perfectly squeeze back to 1080x1350
+        # This single resize is shared by both configurations above. With
+        # the active 1088x1360 canvas the ratio already matches 1080x1350
+        # exactly (1360/1088 == 1350/1080), so this is a plain proportional
+        # downscale -- zero distortion. With USE_LEGACY_1024x1536_STRETCH =
+        # True, the source ratio (2:3) does not match the target (4:5), so
+        # this same line performs the old non-uniform stretch instead -- no
+        # separate code path is needed for that case.
         final_img = generated_img.resize((1080, 1350), Image.Resampling.LANCZOS)
 
         out_buffer = BytesIO()
