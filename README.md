@@ -202,6 +202,60 @@ Analysis is cheap, so it *does* auto-retry and recovers abandoned work.
 
 ---
 
+## Fixing the generated-image aspect-ratio stretch
+
+gpt-image-2 outputs `1024x1536` (a 2:3 ratio); the delivered post is
+`1080x1350` (Instagram's 4:5 ratio). Those are genuinely different ratios, and
+the original resize step (`Image.resize((1080, 1350), ...)`) forced the exact
+target dimensions, **stretching every generated image non-uniformly** —
+visible as horizontal distortion in faces, borders, everything.
+
+**Fix:** `backend/_lib/imaging.py`'s `cover_resize()` — scale proportionally
+to fully cover the target, then center-crop the overflow, the same "cover
+fit" `object-fit: cover` uses in CSS. Never distorts the aspect ratio.
+`generate.py` calls it once per brand via a `FINAL_SIZES` map (both brands
+currently target `1080x1350`; the map exists so a future brand with a
+different delivery size is a one-line addition, not a new code path).
+
+### Why the reference templates needed a margin, not just a smarter crop
+
+A pure crop-only fix was tried first and rejected: verified against a real
+generated image (reconstructed honestly from an actual file already in this
+project's history — see the commit for the full methodology and pixel
+measurements), the crop needed to remove **135px per side** — and both
+reference templates positioned their border/divider and text within **15–25px
+of the frame edge**, nowhere near enough slack. Shipping the crop as-is would
+have cut the border and/or the last line of text on real posts.
+
+So `backend/_lib/assets/reference_format.png` and
+`reference_format_factsbytes.png` were both given a **25%-of-original-height
+margin on top and bottom** (canvas grown, existing design pixels
+untouched — no compression, no redesign). Because the reference always gets
+force-stretched to a fixed `1024x1536` for the API call regardless of its own
+size, a margin fraction of the reference's height carries through unchanged
+to the model's output: 25% added per side works out to **16.67% of the final
+delivered height** — exactly double the 8.33%-per-side the crop needs to
+remove, leaving a deliberate 2x safety factor (8.33% / ~135px of real,
+unused margin remaining after the crop, not a bare-minimum fit).
+
+The new top margin is filled by **edge-extending** the single topmost row
+(not mirroring it — a first attempt at mirror-reflection visibly duplicated
+the border and circular insets into an obvious artifact, since real
+structured content sits close to the top edge in both templates). The
+bottom margin is solid black, matching both templates' existing black text
+panel exactly.
+
+Verified against **two** honestly-reconstructed real images before
+shipping — one for each brand, since no real generated output exists for
+either brand to test with directly (this app never persisted the pre-resize
+intermediate, and Facts Bytes has no generated output anywhere at all): the
+Facts4Genius test used a real AI-generated file already in this project's
+`data_vault`; the Facts Bytes test used the brand's own real reference
+template (the user's actual example post) as the honest content source. Both
+came back clean with real margin to spare, not just barely surviving.
+
+---
+
 ## Multi-tenant isolation
 
 Every visitor gets a silent **Supabase anonymous session** on first load. That

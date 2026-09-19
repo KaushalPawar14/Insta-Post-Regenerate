@@ -48,6 +48,7 @@ from PIL import Image  # noqa: E402
 
 from _lib import config, db, pricing  # noqa: E402
 from _lib.handler import TerminalError
+from _lib.imaging import cover_resize  # noqa: E402
 from _lib.pipeline import (  # noqa: E402
     claim_brand_generation,
     compute_post_rollup_status,
@@ -63,6 +64,16 @@ _ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib", "
 REFERENCE_PATHS = {
     Brand.FACTS4GENIUS: os.path.join(_ASSETS_DIR, "reference_format.png"),
     Brand.FACTSBYTES: os.path.join(_ASSETS_DIR, "reference_format_factsbytes.png"),
+}
+
+# Final delivered size per brand, after gpt-image-2's native 1024x1536
+# output is cover-resized (see _lib/imaging.py) to Instagram's post ratio.
+# Both brands currently target the same 1080x1350 (4:5) -- kept as a
+# per-brand mapping (not a single shared constant) so a future brand with a
+# different delivery size is a one-line addition here, not a new code path.
+FINAL_SIZES = {
+    Brand.FACTS4GENIUS: (1080, 1350),
+    Brand.FACTSBYTES: (1080, 1350),
 }
 
 
@@ -192,11 +203,17 @@ def run(payload: Dict[str, Any]) -> Dict[str, Any]:
         else:
             raise ValueError("Could not extract image from the response.")
 
-        # --- SMART POST-PROCESSING: Squeeze back to perfect Instagram ratio -
+        # --- SMART POST-PROCESSING: cover-resize to the exact delivery ratio -
         generated_img = Image.open(BytesIO(img_data)).convert("RGB")
 
-        # Since we didn't add padding, we don't crop! Just perfectly squeeze back to 1080x1350
-        final_img = generated_img.resize((1080, 1350), Image.Resampling.LANCZOS)
+        # gpt-image-2's native 1024x1536 (2:3) is NOT the same ratio as
+        # Instagram's 1080x1350 (4:5) delivery size -- a direct
+        # .resize((w, h)) to the exact target dimensions stretches the
+        # image non-uniformly (visible as horizontal distortion). cover_resize
+        # scales proportionally to fill the target, then center-crops the
+        # overflow, exactly like CSS `object-fit: cover` -- never distorts.
+        final_width, final_height = FINAL_SIZES[brand]
+        final_img = cover_resize(generated_img, final_width, final_height)
 
         out_buffer = BytesIO()
         final_img.save(out_buffer, "PNG")
