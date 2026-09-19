@@ -11,7 +11,18 @@ export type ParsedInput =
   | { ok: true; inputType: "profile"; url: string; username: string }
   | { ok: false; error: string };
 
-const POST_PATH = /^\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)\/?$/;
+// Deliberately NOT anchored to the start of the path (no `^`): Instagram
+// generates post/reel links in two real shapes -- "/p/SHORTCODE/" and
+// "/USERNAME/p/SHORTCODE/" (username inserted before /p/ or /reel/) -- and
+// the single source of truth for "is this a post" is simply "does the path
+// contain /p/SHORTCODE or /reel/SHORTCODE anywhere in it," ignoring
+// whatever comes before it (username prefix) or after (query string is
+// already stripped by using `parsed.pathname` below, never part of this
+// match at all). Requiring a literal "/" on both sides of the keyword means
+// a username that merely CONTAINS "p" or "reel" (e.g. "/reelgood/") can
+// never false-match -- "reelgood" is one path segment, not "reel" followed
+// by a "/".
+const POST_PATH = /\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)(?:\/|$)/;
 const PROFILE_PATH = /^\/([A-Za-z0-9._]{1,30})\/?$/;
 
 // Instagram paths that look like usernames but aren't.
